@@ -65,10 +65,12 @@ void dm_belt_use(int col, int row) { if (col >= 0 && col < 4 && row >= 0 && row 
 void dm_belt_use_merc(int col, int row) { if (col >= 0 && col < 4 && row >= 0 && row < 4) atomic_store(&g_belt_use, 0x100 | (1 + row * 4 + col)); }   // 腰带双击展开后上面几排：手柄没有这几格的键，走下面 g_use 的原版喂雇佣兵分支 | the upper rows after the belt is expanded by double-tap: the controller has no button for these cells, so go through the original game's feed-mercenary branch of g_use below
 static _Atomic int g_use_merc;   // 这一次 g_use 指定喂雇佣兵（腰带双击）：雇佣兵不在 / 已死 / 这瓶不能喂 = 不喂也不自己喝 | this time g_use is designated to feed the mercenary (belt double-tap): mercenary absent / dead / this bottle cannot be fed = neither feed nor drink it oneself
 int dm_belt_rows(int *expanded) { int v = atomic_load(&g_belt_state); if (expanded) *expanded = v >> 8 & 1; return v & 0xff; }
-static _Atomic int g_sort = -1, g_rname;
+static _Atomic int g_rname;
+static _Atomic uint64_t g_sort_req;   // 待执行的整理：0 = 没有；否则 位 63 有效 | 页 << 40 | 属主类型 << 32 | 属主单位号 | pending sort: 0 = none; otherwise bit 63 valid | page << 40 | owner type << 32 | owner unit id
 static _Atomic int g_held_equip = -1;
 void dm_held_equip(int bodyloc) { if ((bodyloc & 0xff) > 0 && (bodyloc & 0xff) < 16) atomic_store(&g_held_equip, bodyloc); }   // 低 8 位 = 身体栏位；0x100 = 落点是佣兵面板里的格 | Low 8 bits = body location; 0x100 = the drop point is a cell in the mercenary panel
-void dm_inv_sort(int page) { if (page == 0 || page == 3 || page == 4) atomic_store(&g_sort, page); }
+void dm_inv_sort_player(int page) { atomic_store(&g_sort_req, 1ull << 63 | 1ull << 62 | (uint64_t)(page & 0xff) << 40); }   // 测试脚本 A35 / A38 / A39：属主 = 客户端玩家（背包 / 方块 / 个人页） | Test script A35 / A38 / A39: owner = the client player (inventory / cube / personal tab)
+void dm_inv_sort(uint32_t owner_id, uint32_t owner_type, int page) { atomic_store(&g_sort_req, 1ull << 63 | (uint64_t)(page & 0xff) << 40 | (uint64_t)(owner_type & 0xff) << 32 | owner_id); }
 void dm_name_random(void) { atomic_store(&g_rname, 12); }
 int dm_name_taken(const char *name) {   // 一个角色一个目录（存档工作目录 / 角色名） | one directory per character (save working directory / character name)
     const char *dm_save_workdir(void); const char *wd = dm_save_workdir(); char pth[1200];
@@ -574,11 +576,15 @@ void dm_actions_pump(void) {
       if (fm && (on || was)) for (int i = 0; i < 2; i++) { uint64_t w = *(uint64_t *)(fm + (i ? 0x178 : 0x190)); if (w && *(uint64_t *)w - (uint64_t)(uintptr_t)b == 0x2089ab8) *(uint8_t *)(w + 0x632) = (uint8_t)on; }
       was = on; }
     // 整理：main+0x3c2320(属主单位号, 容器页)——物品格「按住排序」（手柄动作键序号 4 + 长按，0x3b2e2c–0x3b2ea0）的终点：客户端算好每件的新位置，发一个 0x4e 包由服务端挪。
-    // 先过原版的可用判断 main+0x3c213c(属主单位, 页)（手上没拿物品等），不过就不调。已经排好时它自己不发包
+    // 照原版顺序：属主单位 = (号 == -1 且类型 == 6) ? 空 : 0x45f5f0(单位表 main+0x2d603a0 + 类型×0x400, 号 & 0x7f, 号, 类型)；
+    // 过了可用判断 0x3c213c(属主单位, 页)（手上没拿物品等）才调。属主与页都由调用方从格子控件读（共享页的属主是它自己的仓库单位）。已经排好时它自己不发包
     // Sort: main+0x3c2320(owner unit id, container page) -- the end point of the item cell "hold to sort" (controller action button index 4 + long press, 0x3b2e2c–0x3b2ea0): the client computes each item's new position and sends one 0x4e packet for the server to move them.
-    // First pass the original availability check main+0x3c213c(owner unit, page) (nothing held in hand, etc.); if it fails, do not call. When already sorted it sends no packet by itself
-    { int sp = atomic_exchange(&g_sort, -1); if (sp >= 0 && pl) { int ok = ((int (*)(uint64_t, int))(b + 0x3c213c))(pl, sp) & 1; if (ok) ((void (*)(uint32_t, int))(b + 0x3c2320))(*(uint32_t *)(pl + 8), sp);
-        LOG("整理：页 %d %s", sp, ok ? "已调原版整理" : "原版判定此刻不能整理（手上拿着物品等），没调"); } }
+    // Same order as the original: owner unit = (id == -1 and type == 6) ? null : 0x45f5f0(unit table main+0x2d603a0 + type×0x400, id & 0x7f, id, type);
+    // call only if the availability check 0x3c213c(owner unit, page) passes (nothing held in hand, etc.). Owner and page are read by the caller from the grid widget (a shared tab's owner is its own stash unit). When already sorted it sends no packet by itself
+    { uint64_t rq = atomic_exchange(&g_sort_req, 0); if (rq && pl) { int me = rq >> 62 & 1; uint32_t id = me ? *(uint32_t *)(pl + 8) : (uint32_t)rq, ty = me ? *(uint32_t *)pl : (uint32_t)(rq >> 32) & 0xff; int pg = (int)(rq >> 40) & 0xff;
+        uint64_t ou = id == UINT32_MAX && ty == 6 ? 0 : ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))(b + 0x45f5f0))((uint64_t)(uintptr_t)(b + 0x2d603a0 + (uint64_t)ty * 0x400), id & 0x7f, id, ty);
+        int ok = ((int (*)(uint64_t, int))(b + 0x3c213c))(ou, pg) & 1; if (ok) ((void (*)(uint32_t, int))(b + 0x3c2320))(id, pg);
+        LOG("整理：属主 %u 类型 %u 页 %d（属主单位%s）%s", id, ty, pg, ou ? "已取到" : "为空", ok ? "已调原版整理" : "原版判定此刻不能整理（手上拿着物品等），没调"); } }
     // 装备 / 卸下。装备：main+0x3cf394(_, 物品)——物品格手柄「按住确认键」分流里的自动装备（0x3cfc34 → 0x3cf394），它用 0x583b60 选栏位、调 0x3bb24c 发一个直达包（空位 0x56、与已装备的交换 0x59 等）。
     // 先照原版过两步判断：0x583b60(玩家, 物品, &栏位, 1, 0) 与 0x565950(玩家, 栏位, 物品, 1, 0)，不过就只播错误音（0x35f120(3,…)，原版同）。雇佣兵面板开着且他能穿（0x3be960）时改给雇佣兵（0x3bed60），同原版顺序。
     // 卸下：main+0x3bb24c(0, 栏位, 1, -1, 0)——装备栏控件「按住确认键」的终点（0x3d6b80），发 0x58 包；栏位号 = 物品数据 +0x54。原版外层的共同前提：手上没拿物品、物品没有待确认的操作（0x474990）、交易中（界面开关 0x2d5ff5e）不做

@@ -637,12 +637,76 @@ static void belt_single_double(void) {
         dm_tc_tick(&s, t + 1); CHECK(s.belt_request == 0);
     }
 }
+
+/* 面板 / 对话态的屏幕按键（摇杆 → 十字键、A、B）与布局编辑 | On-screen keys of panel / dialog state (stick -> D-pad, A, B) and layout editing */
+static void pad_setup(dm_tc_state *s, float sl, float sr) {
+    dm_tc_set_safe_insets(sl,sr); dm_tc_set_pad_cfg(NULL); dm_tc_init(s,874,402); dm_tc_set_navigation_mode(s,1); dm_tc_enable_targets(s,dm_tc_nav_mask(0)); s->mouse_click_mode=1; dm_tc_set_pad_on(s,1);   /* 同前端面板态 | like the front end in panel state */
+}
+static void pad_keys(void) {
+    dm_tc_state s; pad_setup(&s,62,62); const dm_tc_layout *l=&s.layout;
+    for (int i=0;i<DM_TC_PADG_N;++i) { const dm_tc_target *t=&l->pad[i];
+        CHECK(t->r>=26 && t->x-t->r>=0 && t->x+t->r<=874 && t->y-t->r>=0 && t->y+t->r<=402); CHECK(dm_tc_pad_hit(&s,t->x,t->y)==i);   /* 整颗在屏内、直径 >= 52 点 | fully on screen, diameter >= 52 points */
+        for (int j=i+1;j<DM_TC_PADG_N;++j) CHECK(hypotf(t->x-l->pad[j].x,t->y-l->pad[j].y)>t->r+l->pad[j].r); }
+    NEAR(l->pad[DM_TC_PAD_STICK].x,l->joy_x,0.01); NEAR(l->pad[DM_TC_PAD_STICK].r,l->joy_radius,0.01);   /* 摇杆与战斗摇杆同位同大 | the stick has the combat stick's position and size */
+    CHECK(l->pad[DM_TC_PAD_A].x+l->pad[DM_TC_PAD_A].r<=874-62);   /* 让开安全区 | clear of the safe area */
+    /* 编辑钮在非编辑时不存在 | the panel buttons do not exist outside editing */
+    for (int i=DM_TC_PADG_N;i<DM_TC_PAD_N;++i) CHECK(dm_tc_pad_hit(&s,l->pad[i].x,l->pad[i].y)!=i);
+    /* A / B：按住 = 键；滑出 = 松开、滑回也不再按 | A / B: hold = key; slide off = released, sliding back does not press again */
+    dm_tc_begin(&s,0,l->pad[DM_TC_PAD_A].x,l->pad[DM_TC_PAD_A].y); CHECK(s.buttons==DM_BTN_A); CHECK(s.pointer_slot==DM_TC_NONE); dm_tc_end(&s,0); CHECK(s.buttons==0);
+    dm_tc_begin(&s,0,l->pad[DM_TC_PAD_B].x,l->pad[DM_TC_PAD_B].y); CHECK(s.buttons==DM_BTN_B); dm_tc_move(&s,0,437,200); CHECK(s.buttons==0); dm_tc_move(&s,0,l->pad[DM_TC_PAD_B].x,l->pad[DM_TC_PAD_B].y); CHECK(s.buttons==0); dm_tc_end(&s,0);
+    /* 摇杆：相对落点，死区内无键；四个方向按主轴；方向随手指换；拖出底盘照样认 | stick: relative to the touch point, no key inside the dead zone; four directions by dominant axis; direction follows the finger; still recognised when dragged out of the base */
+    float x=l->pad[DM_TC_PAD_STICK].x+20, y=l->pad[DM_TC_PAD_STICK].y;
+    dm_tc_begin(&s,1,x,y); CHECK(s.buttons==0); dm_tc_move(&s,1,x+8,y+5); CHECK(s.buttons==0);
+    dm_tc_move(&s,1,x+30,y+10); CHECK(s.buttons==DM_BTN_RIGHT); dm_tc_move(&s,1,x-30,y+5); CHECK(s.buttons==DM_BTN_LEFT);
+    dm_tc_move(&s,1,x+5,y-40); CHECK(s.buttons==DM_BTN_UP); dm_tc_move(&s,1,x,y+200); CHECK(s.buttons==DM_BTN_DOWN); dm_tc_end(&s,1); CHECK(s.buttons==0);
+    /* 摇杆按着、另一根手指点面板：各管各的 | stick held, another finger taps the panel: independent */
+    dm_tc_begin(&s,1,x,y); dm_tc_move(&s,1,x,y-40); dm_tc_begin(&s,2,437,200); CHECK(s.pointer_slot==2); CHECK(s.buttons & DM_BTN_UP); dm_tc_end(&s,1); dm_tc_end(&s,2);
+    /* 键关着 / 游戏态：同一处不出屏幕按键 | keys off / game state: the same place gives no on-screen key */
+    dm_tc_set_pad_on(&s,0); dm_tc_begin(&s,0,l->pad[DM_TC_PAD_A].x,l->pad[DM_TC_PAD_A].y); CHECK(!(s.buttons & DM_BTN_A)); dm_tc_end(&s,0);
+    dm_tc_set_pad_on(&s,1); dm_tc_set_navigation_mode(&s,0); CHECK(dm_tc_pad_hit(&s,l->pad[DM_TC_PAD_A].x,l->pad[DM_TC_PAD_A].y)<0);
+    dm_tc_set_safe_insets(0,0);
+}
+static void pad_edit(void) {
+    dm_tc_state s; pad_setup(&s,0,0); const dm_tc_layout *l=&s.layout;
+    CHECK(s.pad_sel==-1); dm_tc_set_pad_edit(&s,1); CHECK(s.pad_edit);
+    /* 没选中键：只有「完成」，大小钮不存在；点键外被吞 | nothing selected: only "done", the size buttons do not exist; taps off the keys are swallowed */
+    CHECK(dm_tc_pad_hit(&s,l->pad[DM_TC_PAD_SIZE_INC].x,l->pad[DM_TC_PAD_SIZE_INC].y)!=DM_TC_PAD_SIZE_INC); CHECK(dm_tc_pad_hit(&s,l->pad[DM_TC_PAD_DONE].x,l->pad[DM_TC_PAD_DONE].y)==DM_TC_PAD_DONE);
+    dm_tc_begin(&s,2,437,250); CHECK(s.pointer_slot==DM_TC_NONE); CHECK(s.buttons==0); dm_tc_end(&s,2);
+    /* 点 A = 选中、不出键；拖着挪；别的组不动 | tap A = select, no key; drag moves it; other groups stay */
+    float ax=l->pad[DM_TC_PAD_A].x, ay=l->pad[DM_TC_PAD_A].y, bx=l->pad[DM_TC_PAD_B].x;
+    dm_tc_begin(&s,1,ax,ay); CHECK(s.pad_sel==DM_TC_PAD_A); CHECK(s.buttons==0); dm_tc_move(&s,1,ax-100,ay-50); dm_tc_end(&s,1);
+    NEAR(l->pad[DM_TC_PAD_A].x,ax-100,0.01); NEAR(l->pad[DM_TC_PAD_A].y,ay-50,0.01); NEAR(l->pad[DM_TC_PAD_B].x,bx,0.01);
+    /* 面板：大小 + 只改 A；透明度 −；复位 A；B 不受影响 | panel: size + changes only A; opacity −; reset A; B unaffected */
+    float ra=l->pad[DM_TC_PAD_A].r, rb=l->pad[DM_TC_PAD_B].r; dm_tc_pad_cfg c;
+    dm_tc_begin(&s,1,l->pad[DM_TC_PAD_SIZE_INC].x,l->pad[DM_TC_PAD_SIZE_INC].y); dm_tc_end(&s,1); CHECK(l->pad[DM_TC_PAD_A].r>ra*1.05f); NEAR(l->pad[DM_TC_PAD_B].r,rb,0.01);
+    dm_tc_get_pad_cfg(&c); float a0=c.alpha[DM_TC_PAD_A]; dm_tc_begin(&s,1,l->pad[DM_TC_PAD_ALPHA_DEC].x,l->pad[DM_TC_PAD_ALPHA_DEC].y); dm_tc_end(&s,1); dm_tc_get_pad_cfg(&c); NEAR(c.alpha[DM_TC_PAD_A],a0-0.1f,0.001); NEAR(c.alpha[DM_TC_PAD_B],0.6f,0.001);
+    for (int k=0;k<20;++k) { dm_tc_begin(&s,1,l->pad[DM_TC_PAD_ALPHA_DEC].x,l->pad[DM_TC_PAD_ALPHA_DEC].y); dm_tc_end(&s,1); } dm_tc_get_pad_cfg(&c); NEAR(c.alpha[DM_TC_PAD_A],DM_TC_PAD_ALPHA_MIN,0.001);   /* 到下限停住 | stops at the floor */
+    dm_tc_begin(&s,1,l->pad[DM_TC_PAD_RESET].x,l->pad[DM_TC_PAD_RESET].y); dm_tc_end(&s,1); dm_tc_get_pad_cfg(&c); CHECK(c.dx[DM_TC_PAD_A]==0 && c.scale[DM_TC_PAD_A]==1); NEAR(l->pad[DM_TC_PAD_A].x,ax,0.01);
+    /* 选中摇杆，拖出屏外夹回屏内 | select the stick, dragged off screen is clamped back */
+    dm_tc_begin(&s,1,l->pad[DM_TC_PAD_STICK].x,l->pad[DM_TC_PAD_STICK].y); CHECK(s.pad_sel==DM_TC_PAD_STICK); dm_tc_move(&s,1,-500,900); dm_tc_end(&s,1);
+    CHECK(l->pad[DM_TC_PAD_STICK].x-l->pad[DM_TC_PAD_STICK].r>=-0.01f && l->pad[DM_TC_PAD_STICK].y+l->pad[DM_TC_PAD_STICK].r<=402.01f);
+    /* 完成：配置序号加一，设置合法；编辑钮消失 | done: config sequence increments, settings valid; panel buttons gone */
+    unsigned seq=s.pad_cfg_seq; dm_tc_begin(&s,1,l->pad[DM_TC_PAD_DONE].x,l->pad[DM_TC_PAD_DONE].y); dm_tc_end(&s,1); CHECK(!s.pad_edit); CHECK(s.pad_cfg_seq==seq+1);
+    dm_tc_get_pad_cfg(&c); CHECK(dm_tc_pad_cfg_valid(&c)); CHECK(dm_tc_pad_hit(&s,l->pad[DM_TC_PAD_DONE].x,l->pad[DM_TC_PAD_DONE].y)!=DM_TC_PAD_DONE);
+    /* 非法配置 = 缺省 | invalid config = default */
+    dm_tc_pad_cfg bad; dm_tc_pad_cfg_default(&bad); CHECK(dm_tc_pad_cfg_valid(&bad)); bad.scale[1]=9; CHECK(!dm_tc_pad_cfg_valid(&bad)); bad.scale[1]=1; bad.dx[0]=NAN; CHECK(!dm_tc_pad_cfg_valid(&bad));
+    dm_tc_set_pad_cfg(&bad); dm_tc_get_pad_cfg(&c); CHECK(c.scale[0]==1 && c.dx[0]==0);
+    /* 编辑中关掉键（关面板）：照完成算 | keys turned off while editing (panel closed): counts as done */
+    dm_tc_set_pad_edit(&s,1); seq=s.pad_cfg_seq; dm_tc_set_pad_on(&s,0); CHECK(!s.pad_edit); CHECK(s.pad_cfg_seq==seq+1); CHECK(s.buttons==0);
+    dm_tc_set_pad_cfg(NULL);
+}
 int main(void) {
-    RUN(layout_667); RUN(layout_812); RUN(layout_956); RUN(layout_1024); RUN(layout_ipad169); RUN(layout_pixels); RUN(small_layout); RUN(difficulty_picker);
-    RUN(hit_edges); RUN(key_hold_and_ownership); RUN(two_fingers_same_key); RUN(joystick_deadzone); RUN(joystick_clamp_956);
-    RUN(joystick_axes); RUN(joystick_plus_skills); RUN(no_auto_handoff); RUN(background_no_key);
-    RUN(circles_before_joystick); RUN(cancel_and_resize); RUN(deferred_skill_vs_belt); RUN(held_skill2_vs_belt); RUN(belt_single_double); RUN(no_ui_drag_outside_modal); RUN(invalid_slots_and_repeated_begin); RUN(all_slots_hold); RUN(enabled_targets); RUN(ui_scene_messages);
-    RUN(pointer_tap); RUN(world_tap); RUN(pointer_outside_close); RUN(scene_dialog_only); RUN(pointer_item_tap); RUN(pointer_stack_tap); RUN(pointer_over_disabled_target); RUN(ui_drag_typing); RUN(pointer_drag_out); RUN(pointer_drag); RUN(pointer_long); RUN(pointer_long_then_drag); RUN(pointer_long_seq); RUN(pointer_shop_drag); RUN(pointer_control_hit); RUN(pointer_game_mode); RUN(pointer_pulse_queue); RUN(safe_insets); RUN(swap_key); RUN(skill_cluster_clearance);
-    RUN(belt_expand);
+    RUN(layout_667); RUN(layout_812); RUN(layout_956); RUN(layout_1024); RUN(layout_ipad169); RUN(layout_pixels);
+    RUN(small_layout); RUN(difficulty_picker); RUN(hit_edges); RUN(key_hold_and_ownership);
+    RUN(two_fingers_same_key); RUN(joystick_deadzone); RUN(joystick_clamp_956); RUN(joystick_axes);
+    RUN(joystick_plus_skills); RUN(no_auto_handoff); RUN(background_no_key); RUN(circles_before_joystick);
+    RUN(cancel_and_resize); RUN(deferred_skill_vs_belt); RUN(held_skill2_vs_belt); RUN(belt_single_double);
+    RUN(no_ui_drag_outside_modal); RUN(invalid_slots_and_repeated_begin); RUN(all_slots_hold);
+    RUN(enabled_targets); RUN(ui_scene_messages); RUN(pointer_tap); RUN(world_tap); RUN(pointer_outside_close);
+    RUN(scene_dialog_only); RUN(pointer_item_tap); RUN(pointer_stack_tap); RUN(pointer_over_disabled_target);
+    RUN(ui_drag_typing); RUN(pointer_drag_out); RUN(pointer_drag); RUN(pointer_long);
+    RUN(pointer_long_then_drag); RUN(pointer_long_seq); RUN(pointer_shop_drag); RUN(pointer_control_hit);
+    RUN(pointer_game_mode); RUN(pointer_pulse_queue); RUN(safe_insets); RUN(swap_key);
+    RUN(skill_cluster_clearance); RUN(belt_expand); RUN(pad_keys); RUN(pad_edit);
     printf("PASS %d/%d cases; %d/%d checks\n",cases,cases,checks,checks); return 0;
 }

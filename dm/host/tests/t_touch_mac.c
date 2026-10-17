@@ -53,7 +53,8 @@ void dm_uiscreen_set_panel(int on) { (void)on; }
 int dm_screen_real(int *w, int *h) { *w = 1600; *h = test_real_h; return test_real_h != 0; }
 int dm_uiscreen_ingame(void) { return test_in; }
 void dm_uiscreen_set_ingame(int on) { (void)on; }   // 界面矩形（dm_uiscreen.c）的桩：没开真全屏 | stub for the UI rectangle (dm_uiscreen.c): true full screen not enabled
-void dm_inv_sort(int page) { (void)page; }
+void dm_inv_sort(uint32_t owner_id, uint32_t owner_type, int page) { (void)owner_id; (void)owner_type; (void)page; }
+void dm_inv_sort_player(int page) { (void)page; }
 int dm_diag_difficulty(void) { return -1; }
 uint64_t dm_fs_commit_count(void) { return 0; }
 void dm_held_equip(int bodyloc) { (void)bodyloc; }

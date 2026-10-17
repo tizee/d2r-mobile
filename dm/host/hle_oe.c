@@ -201,11 +201,26 @@ static int scale3d_ctl_step(scale3d_ctl *c, double iv_ms, uint64_t now) {   // �
     else c->good_run = 0;
     return c->level;
 }
-// 画质设置（做界面，这里给接口）：0 = 流畅优先（缺省，掉帧就自动降 3D 比例）；1 = 画质优先（不自动降，保持配置值）。档位名与缺省值等
-// Quality setting (UI to be built; this provides the interface): 0 = smoothness first (default; automatically lowers the 3D scale on frame drops); 1 = quality first (no automatic lowering, keeps the configured value). Level names, defaults, etc.
-static _Atomic int g_3d_quality_mode;
-void dm_3d_quality_mode_set(int mode) { atomic_store(&g_3d_quality_mode, mode == 1 ? 1 : 0); }
-int dm_3d_quality_mode_get(void) { return atomic_load(&g_3d_quality_mode); }
+// 画质档（自定义页「画质」，dm_custom.c gfx_q）：每档 = 输出分辨率倍数（相对屏幕原生像素，界面与最终画面按它出图，系统合成时拉满屏）× 3D 比例（相对输出）+ 是否按掉帧再自动降 3D。
+//   0 原生高清 1.0 × 1.0（不自动降）/ 1 高 1.0 × 0.85 / 2 均衡（缺省）0.75 × 0.75 / 3 流畅 0.67 × 0.70 / 4 低 0.6 × 0.65。
+//   iPhone 17 Pro（2622×1206）：均衡 = 输出 1966×904、3D 1475×678；原先固定的「原生输出 × 0.75」3D 是 1966×904，界面另按原生出图。
+// 过热保护（前端按系统温控档位调 dm_gfx_thermal）：serious 降一档、critical 降两档，回到 nominal / fair 恢复；只降不升过玩家选的档，到「低」为止。
+// 只在 iOS 生效：Mac 宿主恒按原生输出 × 1.0（画面闸门对 Switch 真值比）；DM_3D_SCALE 照旧钉住 3D 比例（测量用）。
+// Graphics presets (Custom page "Graphics quality", dm_custom.c gfx_q): each preset = output resolution factor (relative to the screen's native pixels; UI and the final picture are rendered at it and the system compositor stretches it to the screen) x 3D scale (relative to the output) + whether to lower 3D further on dropped frames.
+//   0 native 1.0 x 1.0 (no automatic lowering) / 1 high 1.0 x 0.85 / 2 balanced (default) 0.75 x 0.75 / 3 smooth 0.67 x 0.70 / 4 low 0.6 x 0.65.
+//   iPhone 17 Pro (2622x1206): balanced = output 1966x904, 3D 1475x678; the previous fixed "native output x 0.75" gave 3D 1966x904 with the UI at native resolution.
+// Thermal guard (the front end calls dm_gfx_thermal with the system thermal state): serious lowers one preset, critical two, back to nominal / fair restores; it only ever lowers from the player's choice, down to "low".
+// iOS only: the Mac host always uses native output x 1.0 (the picture gate compares against Switch ground truth); DM_3D_SCALE still pins the 3D scale (for measurement).
+typedef struct { float out, s3; int dyn; } gfx_q;
+static const gfx_q k_gfx[5] = { { 1.0f, 1.0f, 0 }, { 1.0f, 0.85f, 1 }, { 0.75f, 0.75f, 1 }, { 0.67f, 0.70f, 1 }, { 0.6f, 0.65f, 1 } };
+__attribute__((weak)) int dm_custom_gfx_quality(void) { return 2; }   // 宿主 dm_custom.c 给强定义；t_oe 不链它时按缺省档 | strong definition in the host's dm_custom.c; t_oe without it uses the default preset
+int dm_gfx_level(void);
+static _Atomic int g_gfx_hot;   // 过热降几档（0..2） | how many presets the thermal guard lowers (0..2)
+void dm_gfx_thermal(int state) {   // 前端：NSProcessInfoThermalState 0 nominal / 1 fair / 2 serious / 3 critical | front end: NSProcessInfoThermalState 0 nominal / 1 fair / 2 serious / 3 critical
+    int hot = state >= 3 ? 2 : state == 2 ? 1 : 0, was = atomic_exchange(&g_gfx_hot, hot);
+    if (hot != was) LOG("画质：系统温控档位 %d → 过热降档 %d（玩家选的第 %d 档，实际第 %d 档）", state, hot, dm_custom_gfx_quality(), dm_gfx_level()); }
+int dm_gfx_level(void) { int q = dm_custom_gfx_quality(); if (q < 0 || q > 4) q = 2; q += atomic_load(&g_gfx_hot); return q > 4 ? 4 : q; }
+float dm_gfx_out_scale(void) { return TARGET_OS_IPHONE ? k_gfx[dm_gfx_level()].out : 1.0f; }
 static _Atomic int g_scale3d_level;
 static _Atomic int g_scale3d_resumed;
 void dm_3d_scale_resumed(void) { atomic_store(&g_scale3d_resumed, 1); }   // 前端：刚回前台。回来头几秒的慢帧是恢复（表面重建、缓存变冷），不是 GPU 吃紧：停判 3 秒 | front end: just returned to foreground. Slow frames in the first few seconds back are recovery (surface rebuild, caches gone cold), not GPU pressure: suspend judging for 3 seconds
@@ -217,14 +232,14 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
         for (int k = 0; k < S3_NLV; k++) if (g_s3_levels[k] >= fl - 1e-4f) c.max_level = k + 1;
         LOG("3D 比例控制：%s，下限 %.2f（第 %d 档）", on ? "开" : "关", c.max_level ? g_s3_levels[c.max_level - 1] : 0.0f, c.max_level); }
     if (!on) return;
-    if (atomic_load(&g_3d_quality_mode) == 1) { if (c.level) { c.level = 0; LOG("3D 比例控制：画质优先，回到配置值"); } atomic_store(&g_scale3d_level, 0); return; }
+    if (!k_gfx[dm_gfx_level()].dyn) { if (c.level) { c.level = 0; LOG("3D 比例控制：原生高清档不自动降，回到配置值"); } atomic_store(&g_scale3d_level, 0); return; }
     uint64_t now = now_ns();
     if (atomic_exchange(&g_scale3d_resumed, 0)) scale3d_ctl_hold(&c, now, 3 * S3_SEC);
     { static int was; int in = dm_ingame_now();   // 不在局内（菜单 / 读取）不判；刚进局的 20 秒也不判（进局头十几秒的慢帧是装载，不是 GPU 吃紧） | not judged outside a run (menu / loading); not judged in the first 20 seconds of a run either (slow frames in the first ten-odd seconds of a run are loading, not GPU pressure)
       if (!in) { was = 0; scale3d_ctl_hold(&c, now, S3_SEC); return; }
       if (!was) { was = 1; if (inj0 < 0) scale3d_ctl_hold(&c, now, 20 * S3_SEC); } }
     { int mtl_fps_target(void); double mtl_display_refresh(void), dm_pace_hz(double, double), r = mtl_display_refresh(), hz = dm_pace_hz(r, 60);
-      double p = mtl_fps_target() == 30 ? 1000.0 / dm_pace_hz(r, 30) : hz != 60 ? 1000.0 / hz : 0; if (p != c.period_ms) { c.period_ms = p; scale3d_ctl_hold(&c, now, 2 * S3_SEC); } }   // 目标周期跟着出图帧率换（省电 30 帧、非 60 倍数的屏取整除档，如 144 Hz 屏 72），切换后停判 2 秒 | The target period follows the present frame rate (power saving 30 fps; screens not a multiple of 60 take the evenly dividing tier, e.g. 72 on a 144 Hz screen); checking pauses for 2 seconds after a switch
+      int ft = mtl_fps_target(); double p = ft < 60 ? 1000.0 / dm_pace_hz(r, ft) : hz != 60 ? 1000.0 / hz : 0; if (p != c.period_ms) { c.period_ms = p; scale3d_ctl_hold(&c, now, 2 * S3_SEC); } }   // 目标周期跟着出图帧率换（省电 30 帧、非 60 倍数的屏取整除档，如 144 Hz 屏 72），切换后停判 2 秒 | The target period follows the present frame rate (power saving 30 fps; screens not a multiple of 60 take the evenly dividing tier, e.g. 72 on a 144 Hz screen); checking pauses for 2 seconds after a switch
     if (inj0 >= 0) { long f = (long)dm_nvn_frame_count(); double per = c.period_ms > 0 ? c.period_ms : 1000.0 / 60; iv_ms = f >= inj0 && f <= inj1 ? 2 * per : per; }   // 注入：段内每帧当掉一帧（两个周期） | Injection: every frame within the segment counts as a dropped frame (two periods)
     int was = c.level, lv = scale3d_ctl_step(&c, iv_ms, now);
     if (lv != was) LOG("3D 比例控制：最近 10 秒掉帧 %.1f%%、60 秒 %.1f%% → %s到第 %d 档（3D 比例 %.2f）%s", c.last_r10 * 100, c.last_r60 * 100, lv > was ? "降" : "升", lv,
@@ -235,12 +250,13 @@ void dm_3d_scale_hot(int hot) { (void)hot; }   // 过热不再直接降档（改
 static _Atomic float g_scale3d_cur = 1.0f;
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
 static void scale3d_tick(void) {
-    static float want_cfg = -1, cur = 1.0f; static module_t *main;
-    if (want_cfg < 0) {
-        const char *e = getenv("DM_3D_SCALE"); want_cfg = TARGET_OS_IPHONE ? 0.75f : 1.0f;
-        if (e) { char *end; float v = strtof(e, &end); if (end == e || *end || !(v >= 0.5f && v <= 1.0f)) die("DM_3D_SCALE 非法：%s（要求 0.5–1.0）", e); want_cfg = v; }
+    static float env_cfg = -1, cur = 1.0f; static module_t *main;
+    if (env_cfg < 0) { env_cfg = 0;
+        const char *e = getenv("DM_3D_SCALE");
+        if (e) { char *end; float v = strtof(e, &end); if (end == e || *end || !(v >= 0.5f && v <= 1.0f)) die("DM_3D_SCALE 非法：%s（要求 0.5–1.0）", e); env_cfg = v; }
         for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) main = &g_mod[i];
     }
+    float want_cfg = env_cfg > 0 ? env_cfg : TARGET_OS_IPHONE ? k_gfx[dm_gfx_level()].s3 : 1.0f;   // 配置值跟画质档走（每拍读，换档即生效） | the configured value follows the graphics preset (read every tick, effective on change)
     int lv = atomic_load(&g_scale3d_level);   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值） | Dynamic level: 0 = configured value, k = g_s3_levels[k − 1] (none higher than the configured value)
     float dyn = lv <= 0 ? want_cfg : g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1]; if (dyn > want_cfg) dyn = want_cfg;
     float want = dm_nvn_ruler_truth() ? 1.0f : dyn;

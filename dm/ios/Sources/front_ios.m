@@ -28,6 +28,7 @@ void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void); 
 #include "../../host/dm_uiscreen.h"
 #include "../../host/dm_actions.h"
 #include "../../host/dm_i18n.h"
+#include "../../host/dm.h"
 static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的界面文字（中英表 dm/i18n/ui_text.tsv，语言跟原版设置走） | our own UI text (Chinese-English string table dm/i18n/ui_text.tsv, language follows the original game's setting)
 static _Atomic int g_touch_frontend=1;   // 不在局内（启动即是）：scene.game 为假 | Not in a run (true right at launch): scene.game is false
 static void hud_stack_watch(void);   // 底部 UI v4 面板栈看门（定义见 touch_ui_message 前） | Bottom UI v4 panel stack watch (defined before touch_ui_message)
@@ -135,11 +136,29 @@ static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(
     uint64_t _modifierPublishEndNS,_modifierPublishEpoch;
     uint64_t _touchEventSeq,_touchReceiptSeq,_touchPublishedEventSeq; // 仅 DM_TOUCH_CONTROL_LOG 开启时推进 | Advanced only when DM_TOUCH_CONTROL_LOG is on
     UITouch *_pendEnd; double _pendEndTime,_pendWall; BOOL _pendFire,_finalAsked;   // 松手了但宿主的答案还没回：这根手指的「抬起」先挂着（见 finishTouches） | Released but the host's answer is not back yet: this finger's "lift" is held pending (see finishTouches)
-    int32_t _minLeft,_maxLeft; uint64_t _lastButtons; unsigned _touchAPresses,_touchShots; UITouch *_uiFinger; CGPoint _uiFeO; BOOL _uiFeDrag; BOOL _uiDragOn; UITouch *_mapTouch, *_mapBackTouch, *_bindTouch; UIView *_ghostDim; BOOL _ghostOn; uint64_t _bindKey; uint32_t _selId; double _statNext; double _tipUntil, _addAt; unsigned _mapWorldSeq; BOOL _mapWorldAsked; CGPoint _mapWorldPt; CGPoint _mapP0, _bindP0; double _mapT0; BOOL _pulseTicking; uint64_t _pulseEpoch,_pulseS0; double _pulseT0,_pulseSeen,_pulseFree; unsigned _itemSeq,_relSeq; BOOL _relAsked,_itemAsked; int _itemKind;
+    int32_t _minLeft,_maxLeft; uint64_t _lastButtons; unsigned _touchAPresses,_touchShots; UITouch *_uiFinger; CGPoint _uiFeO; BOOL _uiFeDrag; BOOL _uiDragOn; UITouch *_mapTouch, *_mapBackTouch, *_bindTouch; UIView *_ghostDim; BOOL _ghostOn; uint64_t _bindKey; uint32_t _selId; double _statNext; double _tipUntil, _addAt; UILabel *_perfLabel; double _perfNext, _batT0, _cpu0, _cpuT0; float _bat0; unsigned _mapWorldSeq; BOOL _mapWorldAsked; CGPoint _mapWorldPt; CGPoint _mapP0, _bindP0; double _mapT0; BOOL _pulseTicking; uint64_t _pulseEpoch,_pulseS0; double _pulseT0,_pulseSeen,_pulseFree; unsigned _itemSeq,_relSeq; BOOL _relAsked,_itemAsked; int _itemKind;
 }
 + (Class)layerClass { return CAMetalLayer.class; }
+// 面板 / 对话态屏幕按键的布局（位置偏移、大小、透明度）：存 NSUserDefaults（App 自己的偏好，升级不丢、不进存档）；读到不合法的值 = 缺省并记红
+// Layout of the on-screen keys of panel / dialog state (position offsets, size, opacity): stored in NSUserDefaults (the app's own preferences, kept across upgrades, not in the save); an invalid value read = default, logged red
+static NSString *const kPadCfgKey=@"dm.vpad.cfg.v2";   // v2：每组一份大小 / 透明度（v1 的十字键与四键布局已不用，不迁移） | v2: per-group size / opacity (the v1 D-pad and four-key layout is gone, not migrated)
+#define PAD_CFG_N (4*DM_TC_PADG_N)
+static void pad_cfg_load(void) {
+    NSArray *a=[NSUserDefaults.standardUserDefaults arrayForKey:kPadCfgKey]; dm_tc_pad_cfg c; dm_tc_pad_cfg_default(&c);
+    if(a.count==PAD_CFG_N) { for(int g=0;g<DM_TC_PADG_N;g++) { c.dx[g]=[a[g] floatValue]; c.dy[g]=[a[DM_TC_PADG_N+g] floatValue]; c.scale[g]=[a[2*DM_TC_PADG_N+g] floatValue]; c.alpha[g]=[a[3*DM_TC_PADG_N+g] floatValue]; }
+        if(!dm_tc_pad_cfg_valid(&c)) { LOG("【红】前端：屏幕按键布局存的值不合法，用缺省"); dm_tc_pad_cfg_default(&c); } }
+    else if(a) LOG("【红】前端：屏幕按键布局存的条数不对（%lu），用缺省",(unsigned long)a.count);
+    dm_tc_set_pad_cfg(&c);
+}
+static void pad_cfg_save(void) {
+    dm_tc_pad_cfg c; dm_tc_get_pad_cfg(&c); NSMutableArray *a=[NSMutableArray array]; const float *v[4]={c.dx,c.dy,c.scale,c.alpha};
+    for(int k=0;k<4;k++) for(int g=0;g<DM_TC_PADG_N;g++) [a addObject:@(v[k][g])];
+    [NSUserDefaults.standardUserDefaults setObject:a forKey:kPadCfgKey]; LOG("前端：屏幕按键布局已存（大小 %.1f/%.1f/%.1f，不透明度 %.1f/%.1f/%.1f）",c.scale[0],c.scale[1],c.scale[2],c.alpha[0],c.alpha[1],c.alpha[2]);
+}
+static int nav_pad_wanted(int n) { int dm_custom_get(const char *key); return n && n!=2 && dm_custom_get("nav_pad"); }   // 面板态与只开着对话菜单时给；死亡页不给 | given in panel state and when only the dialog menu is open; not on the death screen
 - (instancetype)initWithFrame:(CGRect)f {
     if (!(self = [super initWithFrame:f])) return nil;
+    pad_cfg_load();
     self.multipleTouchEnabled = YES;
     self.isAccessibilityElement=YES; self.accessibilityIdentifier=@"dm_touch_surface"; self.accessibilityLabel=SWT("dmA11ySurface");
     dm_tc_init(&_controls,f.size.width,f.size.height); _controls.mouse_click_mode=1;   // 功能页里非物品区的点按走界面鼠标点击 | Taps outside the item area in function pages go through UI mouse clicks
@@ -183,7 +202,7 @@ static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(
     static int pad=-1; if(pad<0) { const char *e=getenv("DM_TOUCH_NAV_PAD"); pad=e && e[0]=='1'; }   // 面板态的五个虚拟手柄圆钮：缺省不给（点按 / 双击 / 拖放 / 点页签 / 面板外点按已全部替代，圆钮还压着背包格右半边）；DM_TOUCH_NAV_PAD=1 调试时叫回来 | The five round virtual controller buttons of panel mode: not shown by default (tap / double tap / drag and drop / tab tap / tap outside the panel have replaced them all, and the round buttons also sat over the right half of the inventory cells); DM_TOUCH_NAV_PAD=1 brings them back for debugging
     uint32_t mask=n ? (dm_tc_nav_mask(pad && n!=2) | (n==3 ? 1u<<DM_TC_MENU : 0)) :   // 3 = 只开着 NPC 对话菜单：底栏十字可点（原版 ＋ 键此时 = 关对话并开功能页） | 3 = only the NPC dialog menu is open: the bottom bar cross is tappable (the original game's + key at this time = close the dialog and open the function page)
         (((1u<<DM_TC_COUNT)-1) & ~(1u<<DM_TC_MAP));   // 游戏态不要右上地图键（不要顶部图标） | No top-right map button in game mode (no top icon wanted)
-    dm_tc_enable_targets(&_controls,mask); _overlay.navigationMode=n!=0; [self pushFrom:"navigation" phase:"none"];
+    dm_tc_enable_targets(&_controls,mask); dm_tc_set_pad_on(&_controls,nav_pad_wanted(n)); _overlay.navigationMode=n!=0; [self pushFrom:"navigation" phase:"none"];
     if(!n && !getenv("DM_TOUCH_SCRIPT_START")) touch_script_start();
     if(!n) [self itemLabelsOn];
     if(n && dm_ui_map_is_full()) { dm_ui_map_full(0); LOG("前端：开了面板，全屏地图先收回小地图"); }   // 全屏地图的面板盖满整屏，会挡在别的面板前面；全屏地图只属于游戏态 | The fullscreen map's panel covers the whole screen and would block other panels; the fullscreen map belongs to game mode only
@@ -419,6 +438,28 @@ static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(
     [CATransaction commit];
     static int lm=-1, ln=-1, lc; int m2=show ? mode : 0; if((m2!=lm || n!=ln) && lc<40) { lm=m2; ln=n; lc++; LOG("小地图终点：%s %d 个（地图 %d，每格 %.2f 像素 = %.2f 点）", show ? "画" : "不画", n, mode, cell, c); }
 }
+// 开发者性能浮层（自定义页「显示性能浮层」perf_hud）：左上角安全区内一块小字，每 0.5 秒刷新。数据：宿主 dm_perf_snapshot（上屏帧率 / 1% low / 最长帧、GPU 与提交 CPU 每帧毫秒、
+// 3D 比例、游戏输出分辨率、实际画质档）+ 这里读的进程 CPU 占用（getrusage，多核可超过 100%）、系统温控档位、电量与每小时掉电（UIDevice，1% 粒度，开浮层满 2 分钟后才给）、低电量模式。
+// 全用 ASCII：开发者读数，不进中英表
+// Developer performance overlay (Custom page "Performance overlay", perf_hud): a small block of text in the top-left of the safe area, refreshed every 0.5 s. Data: host dm_perf_snapshot (present FPS / 1% low / worst frame, GPU and submit CPU ms per frame,
+// 3D scale, game output resolution, effective graphics preset) + read here: process CPU usage (getrusage, can exceed 100% on multiple cores), system thermal state, battery level and drain per hour (UIDevice, 1% granularity, only after the overlay has been on for 2 minutes), low power mode.
+// ASCII only: developer readings, not in the bilingual table
+- (void)perfHudTick:(double)now {
+    int dm_custom_get(const char *key); BOOL on=dm_custom_get("perf_hud") && !_feMode;
+    if(!on) { if(_perfLabel) { [_perfLabel removeFromSuperview]; _perfLabel=nil; UIDevice.currentDevice.batteryMonitoringEnabled=NO; } return; }
+    if(now<_perfNext) return; _perfNext=now+0.5;
+    if(!_perfLabel) { _perfLabel=[UILabel new]; _perfLabel.numberOfLines=0; _perfLabel.font=[UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightMedium]; _perfLabel.textColor=UIColor.whiteColor;
+        _perfLabel.backgroundColor=[UIColor colorWithWhite:0 alpha:.55]; _perfLabel.userInteractionEnabled=NO; [self addSubview:_perfLabel];
+        UIDevice.currentDevice.batteryMonitoringEnabled=YES; _batT0=now; _bat0=UIDevice.currentDevice.batteryLevel; _cpuT0=0; }
+    dm_perf_snap p; dm_perf_snapshot(&p);
+    struct rusage ru; getrusage(RUSAGE_SELF,&ru); double cpu=ru.ru_utime.tv_sec+ru.ru_utime.tv_usec/1e6+ru.ru_stime.tv_sec+ru.ru_stime.tv_usec/1e6, pct=_cpuT0>0 && now>_cpuT0 ? (cpu-_cpu0)/(now-_cpuT0)*100 : 0; _cpu0=cpu; _cpuT0=now;
+    float bl=UIDevice.currentDevice.batteryLevel; double dh=now-_batT0; NSString *drain=bl>=0 && _bat0>=0 && dh>=120 ? [NSString stringWithFormat:@" %+.0f%%/h",(bl-_bat0)*100/(dh/3600)] : @"";
+    static const char *th[4]={"nominal","fair","SERIOUS","CRITICAL"}; long ts=(long)NSProcessInfo.processInfo.thermalState;
+    _perfLabel.text=[NSString stringWithFormat:@" FPS %.1f  1%%low %.0f  worst %.1fms  drop %u \n GPU %@  submit %.1fms  proc CPU %.0f%% \n Q%d out %ux%u  3D %.2f \n thermal %s  battery %@%@%@ ",
+        p.fps,p.low1,p.worst_ms,p.dropped,p.gpu_ms>0?[NSString stringWithFormat:@"%.1fms",p.gpu_ms]:@"-",p.cpu_ms,pct,p.level,p.out_w,p.out_h,p.s3,
+        th[ts>=0&&ts<4?ts:0],bl>=0?[NSString stringWithFormat:@"%.0f%%",bl*100]:@"?",drain,NSProcessInfo.processInfo.lowPowerModeEnabled?@" LPM":@""];
+    CGSize fit=[_perfLabel sizeThatFits:CGSizeMake(400,200)]; _perfLabel.frame=CGRectMake(self.safeAreaInsets.left+4,4,fit.width,fit.height);
+}
 - (void)tickTouchControls:(double)now {
     [self mapGoalSync];
     { int dm_padmode_busy(void); BOOL hide=_feMode || _padMode || dm_padmode_busy(); if(_overlay.hidden!=hide) _overlay.hidden=hide; }   // 手柄 → 触屏切换事务还没完成（界面还在重建）时触屏控件层先不露出来（dm_padmode.c） | While the controller → touch switch transaction is not yet complete (the UI is still rebuilding) the touch control layer is not revealed yet (dm_padmode.c)
@@ -470,8 +511,13 @@ static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(
     else if(_tipUntil==-2) { if(dm_ui_free_cursor()) _tipUntil=now+0.3; }   // 只在有自由光标的页停（暂停菜单 / 主菜单这类不动：冒烟玩家路径红） | Park only on pages with a free cursor (pause menu / main menu and the like stay put: smoke test player path fails)
     else if(_tipUntil>0 && now>=_tipUntil && !_controls.holding && !dm_ui_bind_active() && !dm_ui_touch_active() && !_controls.pulse_button && !dm_tc_pulse_pending(&_controls) && !dm_cursor_pending()) {   // dm_ui_touch_active：这一下点击宿主还没处理完（点绑定框格子要等它处理了才进绑定态）——不等的话光标先被挪走，游戏的绑定框就不认随后的键 | dm_ui_touch_active: the host has not finished handling this click (tapping a binding box cell enters binding mode only after it is handled) -- without waiting, the cursor is moved away first and the game's binding box does not accept the following key
         CGSize z=self.bounds.size; _controls.pointer_valid=1; _controls.pointer_x=0.02f*(float)z.width; _controls.pointer_y=0.5f*(float)z.height; _tipUntil=0; }   // 选中的标识留着：看完说明（框已收）再点同一个仍是加点 | The selected ID is kept: after reading the tooltip (already closed), tapping the same one again still adds a point
-    uint64_t tb=_controls.buttons;
+    [self perfHudTick:now];
+    uint64_t tb=_controls.buttons; int pe=_controls.pad_edit;
     dm_tc_tick(&_controls, now);
+    { unsigned dm_custom_gen(void); static unsigned cg; if(dm_custom_gen()!=cg) { cg=dm_custom_gen(); if(_controls.pad_on!=nav_pad_wanted(_navigation)) { dm_tc_set_pad_on(&_controls,nav_pad_wanted(_navigation)); [self pushFrom:"nav_pad" phase:"none"]; } } }   // 自定义页改了「屏幕按键」开关：当场生效 | the Custom page changed the on-screen keys switch: effective at once
+    { int dm_custom_take_pad_edit(void); if(dm_custom_take_pad_edit()) { if(_controls.pad_on) { dm_tc_set_pad_edit(&_controls,1); [self pushFrom:"pad_edit" phase:"none"]; } else LOG("前端：「调整屏幕按键」点了，但屏幕按键是关着的（自定义页开关 nav_pad），不进编辑"); } }
+    if(_controls.pad_edit!=pe) { [_overlay setNeedsDisplay]; LOG("前端：屏幕按键%s布局编辑",_controls.pad_edit?"进入":"退出"); }
+    { static unsigned saved; if(_controls.pad_cfg_seq!=saved) { saved=_controls.pad_cfg_seq; pad_cfg_save(); [_overlay setNeedsDisplay]; } }
     { int fg=0; for(int i=0;i<DM_TC_MAX_TOUCH;i++) fg|=_controls.finger[i].active; dm_ui_hand_idle(!fg && !_controls.pulse_button && !dm_tc_pulse_pending(&_controls) && !dm_cursor_pending() && !dm_ui_touch_active()); }   // 手上物品守门：触摸空闲才收手上那件 | Held-item guard: the item in hand is put away only when touch is idle
     if(_controls.buttons!=tb && !_controls.pulse_button) [self pushFrom:"tick" phase:"none"];   // tick 里键位变了（第二组：主钮的键在 ZL 领先够了那一拍补上） | Key state changed in tick (second set: the main button's key is added on the tick when ZL has led long enough)
     else if(_controls.belt_request && !_controls.pulse_button) [self pushFrom:"tick" phase:"none"];   // 腰带上面几排的单击过了双击窗（dm_tc_tick 里定下的 belt_request）：当拍交宿主，不等下一次触摸 | A single tap on the upper belt rows has passed the double-tap window (belt_request decided in dm_tc_tick): hand it to the host within this tick, without waiting for the next touch
@@ -519,6 +565,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(!_mapTouch && [self inMinimap:[t locationInView:self]]) { _mapTouch=t; _mapP0=[t locationInView:self]; _mapT0=CACurrentMediaTime(); continue; }
         for(int i=0;i<16;i++) if(!_slot[i]) {
             _slot[i]=t; CGPoint p=[t locationInView:self]; { int ex=0; _controls.belt_rows=dm_belt_rows(&ex); _controls.belt_open=ex; } dm_tc_begin_at(&_controls,i,p.x,p.y,CACurrentMediaTime()); slot=i;
+            if(_controls.finger[i].target>=DM_TC_PAD0) _tipUntil=0;   // 屏幕按键：说明框 / 光标停靠的计时作废（光标交给游戏自己的焦点，不再被挪去屏幕左缘） | On-screen key: the tooltip / cursor parking timer is voided (the cursor is left to the game's own focus and no longer moved to the left edge)
             if(!_navigation && _controls.finger[i].target==DM_TC_PORTAL) { void dm_tp_request(void); dm_tp_request(); LOG("前端：点回城钮 → 免费回城"); }   // 不要回城书 / 卷轴（宿主 dm_freetp.c） | No Tome of Town Portal / scroll needed (host dm_freetp.c)
             if(!_navigation && !_mapBackTouch && _controls.finger[i].target==DM_TC_NONE && dm_ui_map_is_full()) { _mapBackTouch=t; _mapP0=p; _mapT0=CACurrentMediaTime(); }   // 全屏地图开着、这根手指没落在任何键和摇杆区上：松手时若是点按就回小地图 | Fullscreen map open and this finger landed on no button and no stick area: if it turns out to be a tap on release, return to the minimap
             // 功能页里的指针手指：问宿主这点是不是物品区（游戏主线程下一帧作答，松手时取）
@@ -843,7 +890,7 @@ static void touch_ui_message(const char *cat,const char *act,const char *arg) {
 @implementation DmRateHint
 - (void)tick:(CADisplayLink *)l {
     extern int mtl_fps_target(void);
-    { static int last = -1; int f = mtl_fps_target(); if (f != last) { last = f; l.preferredFrameRateRange = f == 30 ? CAFrameRateRangeMake(30, 30, 30) : CAFrameRateRangeMake(60, 60, 60); } }   // 省电模式（30 帧）：帧率提示一起降，ProMotion 屏才会真降刷新率 | Power-saving mode (30 fps): lower the frame rate hint as well; only a ProMotion screen actually lowers the refresh rate
+    { static int last = -1; int f = mtl_fps_target(); if (f != last) { last = f; l.preferredFrameRateRange = CAFrameRateRangeMake(f, f, f); } }   // 省电模式（30 帧）：帧率提示一起降，ProMotion 屏才会真降刷新率 | Power-saving mode (30 fps): lower the frame rate hint as well; only a ProMotion screen actually lowers the refresh rate
     DmMetalView *v = g_touch_view;
     if (v) {
         if (g_full) { static int lx = -1, ly, lw, lh, lrh, lrw; int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);   // 界面矩形由宿主定（开机后才有、切档会变）：变了就让容器重摆游戏视图 | The UI rectangle is decided by the host (available only after boot, changes when the profile switches): on change, have the container re-lay out the game view
@@ -1124,15 +1171,21 @@ void front_save_failed(int err) {
 
 #define THERMAL_RESTORE_SEC 60
 
+// 过热保护：温控到 serious / critical 立即按档降画质（宿主 dm_gfx_thermal：降一 / 两档，输出分辨率与 3D 一起降）；回落到 serious 以下后再等 THERMAL_RESTORE_SEC 秒仍没回升才恢复，
+// 免得在门槛上来回切（每次切分辨率游戏要重建渲染目标）。DM_THERMAL_NOFALLBACK=1（功耗测量）不降
+// Thermal guard: at serious / critical lower the graphics preset at once (host dm_gfx_thermal: one / two presets down, output resolution and 3D together); after falling below serious, restore only if it stays there for THERMAL_RESTORE_SEC seconds,
+// so it does not flip back and forth at the threshold (each resolution switch makes the game rebuild its render targets). DM_THERMAL_NOFALLBACK=1 (power measurement) does not lower
+void dm_gfx_thermal(int state);   // 宿主 hle_oe.c | host hle_oe.c
 static void thermal_apply(void) {
-    static unsigned gen;                       // 每次状态变化作废之前排的「恢复主机模式」 | Every state change invalidates the previously scheduled "restore docked mode"
+    static unsigned gen;                       // 每次状态变化作废之前排的恢复 | every state change invalidates the previously scheduled restore
     NSProcessInfoThermalState s = NSProcessInfo.processInfo.thermalState;
     unsigned my = ++gen;
     if (s >= NSProcessInfoThermalStateSerious) {
         if (getenv("DM_THERMAL_NOFALLBACK")) { LOG("前端：过热 %ld，DM_THERMAL_NOFALLBACK 不降档（只供功耗测量）", (long)s); return; }
-        LOG("前端：过热 %ld（3D 比例改由实际掉帧驱动，这里只记一行）", (long)s); return; }
+        LOG("前端：过热 %ld → 画质降档", (long)s); dm_gfx_thermal((int)s); return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)THERMAL_RESTORE_SEC * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        if (my == gen && NSProcessInfo.processInfo.thermalState < NSProcessInfoThermalStateSerious) { LOG("前端：温度回落持续 %d 秒", THERMAL_RESTORE_SEC); }
+        NSProcessInfoThermalState n = NSProcessInfo.processInfo.thermalState;
+        if (my == gen && n < NSProcessInfoThermalStateSerious) { LOG("前端：温度回落持续 %d 秒（档位 %ld）→ 画质恢复", THERMAL_RESTORE_SEC, (long)n); dm_gfx_thermal((int)n); }
     });
 }
 

@@ -15,6 +15,29 @@ enum {
     DM_TC_MENU, DM_TC_MAP
 };
 typedef struct { float x, y, r; uint64_t button; } dm_tc_target;
+/* 面板 / 对话态的屏幕按键：一个摇杆（样子同战斗摇杆，按手指相对落点的方向归一成十字键上 / 下 / 左 / 右）+ A（确认）+ B（取消）。
+   只给这两颗键：别的手柄键在面板里的作用要靠按键映射配置才说得清，没有配置之前放出来只会误按。
+   布局编辑：自定义页「调整屏幕按键」进入。编辑中点一颗键 = 选中它（可拖着挪），顶部弹出调整面板（大小 − / +、透明度 − / +、复位这一颗、完成）；
+   调整面板只认「选中的那一组」，与键的种类无关，以后别的屏幕控件登记成组即可复用
+   On-screen keys of panel / dialog state: one stick (looks like the combat stick; the finger direction relative to the touch point is normalised to D-pad up / down / left / right) + A (confirm) + B (cancel).
+   Only these keys: what the other controller keys do in panels can only be explained with a key-mapping configuration; without one they would only be pressed by mistake.
+   Layout editing: entered from the Custom page "Adjust on-screen keys". While editing, tapping a key = select it (it can be dragged), and an adjust panel pops up at the top (size − / +, opacity − / +, reset this key, done);
+   the adjust panel only works on "the selected group", independent of the key type, so other on-screen controls can reuse it later by registering as groups */
+enum { DM_TC_PAD_STICK, DM_TC_PAD_A, DM_TC_PAD_B,
+       DM_TC_PAD_SIZE_DEC, DM_TC_PAD_SIZE_INC, DM_TC_PAD_ALPHA_DEC, DM_TC_PAD_ALPHA_INC, DM_TC_PAD_RESET, DM_TC_PAD_DONE,   /* 调整面板的钮：只在编辑时有 | adjust panel buttons: only while editing */
+       DM_TC_PAD_N };
+#define DM_TC_PADG_N 3   /* 可调的组 = 前三颗（摇杆 / A / B），组号 = 键号 | adjustable groups = the first three (stick / A / B), group index = key index */
+#define DM_TC_PAD0 64    /* 手指 target = DM_TC_PAD0 + 键号；编辑时拖组 = DM_TC_PADDRAG0 + 组号 | finger target = DM_TC_PAD0 + key index; dragging a group while editing = DM_TC_PADDRAG0 + group */
+#define DM_TC_PADDRAG0 96
+/* 布局设置（每组一份）：相对缺省位置的偏移（屏宽 / 屏高的比例，转屏 / 换机型不跑偏）、大小倍数、不透明度 | Layout settings (one per group): offset from the default position (fraction of screen width / height, so rotation / another device does not drift), size factor, opacity */
+typedef struct { float dx[DM_TC_PADG_N], dy[DM_TC_PADG_N], scale[DM_TC_PADG_N], alpha[DM_TC_PADG_N]; } dm_tc_pad_cfg;
+#define DM_TC_PAD_SCALE_MIN 0.6f
+#define DM_TC_PAD_SCALE_MAX 1.8f
+#define DM_TC_PAD_ALPHA_MIN 0.2f
+void dm_tc_pad_cfg_default(dm_tc_pad_cfg *c);
+int dm_tc_pad_cfg_valid(const dm_tc_pad_cfg *c);   /* 每个数有限、在范围内（偏移 ±1、大小 MIN..MAX、不透明度 ALPHA_MIN..1） | every number finite and in range (offset ±1, size MIN..MAX, opacity ALPHA_MIN..1) */
+void dm_tc_set_pad_cfg(const dm_tc_pad_cfg *c);   /* 在 init / resize 之前设（同安全区）；不合法 = 缺省 | set before init / resize (like the safe area); invalid = default */
+void dm_tc_get_pad_cfg(dm_tc_pad_cfg *c);
 typedef struct {
     float width, height;
     int tablet, swap_above;   // 已生效的布局配置，绘制和命中判定共用 | Applied layout profile; mirrors drawing and hit testing.
@@ -24,6 +47,7 @@ typedef struct {
     dm_tc_target swap;   /* 技能组切换键：本地开关，不直接发按键 | Skill set switch key: a local toggle; does not send a key directly */
     dm_tc_target diff;   /* 底部 UI v4 第 0 格难度：点开 / 收起 1–8 选择条，不发按键 | Bottom UI v4 cell 0 difficulty: tap to open / collapse the 1–8 selector bar; sends no key */
     dm_tc_target pick[8];   /* 选择条 8 格（第 i 格 = 人数档 i+1），在七格上方 | The selector bar's 8 cells (cell i = player-count level i+1), above the seven cells */
+    dm_tc_target pad[DM_TC_PAD_N];   /* 面板 / 对话态的屏幕按键（见上） | on-screen keys of panel / dialog state (see above) */
 } dm_tc_layout;
 typedef struct {
     int active, target;
@@ -129,6 +153,10 @@ typedef struct {
     float joy_touch_x, joy_touch_y, joy_lost_tx, joy_lost_ty;   /* 摇杆那根手指的落点（方向与幅度一律按「手指相对落点」算；joy_origin 只是底盘画在哪 = 落点夹回屏内之后）；被系统取消时记下的落点 | touch point of the stick finger (direction and magnitude are always computed from "finger relative to the touch point"; joy_origin is only where the base is drawn = the touch point clamped onto the screen); the touch point recorded when it was cancelled by the system */
     double belt_pulse_s;   /* 最近一次「给玩家喝」的腰带脉冲还在发的时刻：其间按着的第二组技能连同 ZL 一起让开，收回后 ZL 重新领先 DM_TC_ZL_LEAD_S 技能键才回来 | Time until which the most recent "player drinks" belt pulse is still being sent: during it the held second-set skill gives way together with ZL, and after the release ZL again leads by DM_TC_ZL_LEAD_S before the skill key comes back */
     int belt_q;   /* 此刻有别的脉冲在发 / 别的补发在等：排着，空了再落地（不互相盖掉）。值 = 格 | another pulse is being sent / another resend is pending: queue and fire when free (they never overwrite each other). Value = cell */
+    /* 屏幕按键：pad_on = 前端开（面板 / 对话态、自定义设置 nav_pad 开）；pad_edit = 在编辑布局；pad_cfg_seq = 编辑完成一次加一（前端看到就存盘）
+       On-screen keys: pad_on = turned on by the front end (panel / dialog state, Custom setting nav_pad on); pad_edit = editing the layout; pad_cfg_seq = incremented each time editing finishes (the front end saves on seeing it) */
+    int pad_on, pad_edit, pad_sel; unsigned pad_cfg_seq;   /* pad_sel：编辑中选中的组（-1 = 没选） | pad_sel: the group selected while editing (-1 = none) */
+    float pad_ox, pad_oy;   /* 摇杆手指的落点（方向按手指相对它算） | touch point of the stick finger (direction is computed relative to it) */
 } dm_tc_state;
 
 /* 原版UI消息驱动，不根据输入键猜面板。AutoMap是战斗叠加，不切导航。 | Driven by the original game's UI messages; panels are not guessed from input keys. AutoMap is a combat overlay and does not switch to navigation. */
@@ -168,6 +196,9 @@ static inline uint32_t dm_tc_nav_mask(int pad) { return pad ? ((1u<<DM_TC_MAIN)|
 /* 模式变化释放全部手势；导航模式只按键，不启用技能拖拽和地图取消区。 | A mode change releases all gestures; navigation mode only presses keys and does not enable skill dragging or the map cancel area. */
 void dm_tc_set_navigation_mode(dm_tc_state *state, int navigation_mode);
 void dm_tc_set_joy_block(dm_tc_state *state, int block);   /* 讲话文字框 / 对话菜单单独开着：落在底座上的手指不起摇杆、只当一次点击 | speech text box / dialogue menu open on its own: a finger on the base starts no stick and is just one click */
+void dm_tc_set_pad_on(dm_tc_state *state, int on);   /* 屏幕按键开 / 关（只在导航态生效）；关时放掉按着的键、退出编辑 | on-screen keys on / off (effective only in navigation state); off releases held keys and leaves editing */
+int dm_tc_pad_hit(const dm_tc_state *state, float x, float y);   /* 落在哪颗屏幕按键上（-1 = 没有）；只认此刻有效的 | which on-screen key this lands on (-1 = none); only keys valid right now */
+void dm_tc_set_pad_edit(dm_tc_state *state, int on);   /* 进 / 出布局编辑（出 = 完成，配置序号加一） | enter / leave layout editing (leave = done, config sequence incremented) */
 /* 只取消回城控件拥有的core触点；物理触点由前端保留。 | Cancel only the core touch point owned by the town-portal widget; the physical touch point is kept by the front end. */
 void dm_tc_set_portal_button(dm_tc_state *state, uint64_t mask);
 void dm_tc_set_portal_binding(dm_tc_state *state, uint64_t mask, uint64_t binding_identity, uint64_t scene_epoch);
@@ -207,6 +238,7 @@ int dm_tc_belt_outside(const dm_tc_state *state, float x, float y);
 #define DM_TC_ZL_LEAD_S 0.17   /* 修饰键领先主键的时间（约 10 帧；同一帧按下游戏只认主键） | Time the modifier key leads the main key (about 10 frames; pressed in the same frame, the game only recognizes the main key) */
 #define DM_TC_DOUBLE_TAP_S 0.40   /* 两次单击间隔上限 | Upper limit of the interval between two single taps */
 #define DM_TC_HOLD_USE_S 0.60     /* 「按住」动作的按住时长：Mac 宿主实测 0.25 s 只捡起、0.45 s 打开魔盒 | Hold duration of the "hold" action: measured on the Mac host, 0.25 s only picks up, 0.45 s opens the cube */
+#define DM_TC_PAD_DEAD_PT 14.0f   /* 屏幕摇杆：手指离落点超过这么多点才出方向（× 控件缩放） | on-screen stick: a direction appears only once the finger is this many points from the touch point (x widget scale) */
 int dm_tc_pulse_resume(dm_tc_state *state);
 
 #ifdef __cplusplus

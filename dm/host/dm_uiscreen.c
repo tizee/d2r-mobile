@@ -16,6 +16,7 @@
 #include "hle.h"
 #include "dm.h"
 #include <stdatomic.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -89,6 +90,11 @@ void dm_uiscreen_res_reread(void) { uint8_t *b = main_base(); int rw = atomic_lo
 static _Atomic int g_world, g_res_live;
 uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t w = (uint32_t)r, h = (uint32_t)(r >> 32);   // 先问前端：iOS 前端在第一次被问时才决定开不开真全屏 | Ask the front end first: the iOS front end only decides whether to turn on true fullscreen the first time it is asked
     if (atomic_load(&g_res_live) && mode() != DM_UISCREEN_OFF && !atomic_load(&g_world) && (uint64_t)w * 9 < (uint64_t)h * 16) h = (uint32_t)((uint64_t)w * 9 / 16) & ~1u;
+    // 画质档的输出分辨率倍数（hle_oe.c dm_gfx_out_scale）：窗口建好之后才缩（游戏只接受不超过窗口初始尺寸的新值，启动时必须先给原生值），宽高同比、取偶数。
+    // 游戏按新尺寸出图，出图层把这块裁切区拉满屏（nvn_mtl.m present_encode），界面与 3D 一起变省
+    // Output resolution factor of the graphics preset (hle_oe.c dm_gfx_out_scale): scaled only after the window is built (the game only accepts new values no larger than the window's initial size, so native must be given first at startup), width and height together, rounded to even.
+    // The game renders at the new size and the present layer stretches that crop region to the full screen (nvn_mtl.m present_encode), so UI and 3D both get cheaper
+    if (docked && atomic_load(&g_res_live)) { float s = dm_gfx_out_scale(); if (s > 0 && s < 1) { w = (uint32_t)lroundf(w * s) & ~1u; h = (uint32_t)lroundf(h * s) & ~1u; } }
     return (uint64_t)h << 32 | w; }
 
 void dm_uiscreen_pump(void) {
@@ -96,6 +102,8 @@ void dm_uiscreen_pump(void) {
     { int world = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) != 0;
       int first = !atomic_exchange(&g_res_live, 1);
       if ((atomic_exchange(&g_world, world) != world || (first && !world)) && mode() != DM_UISCREEN_OFF) { LOG("界面画面：%s → 游戏分辨率切到 %u x %u", world ? "玩家单位建立" : first ? "窗口已建好、在前端" : "玩家单位销毁", (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); } }
+    { static float last = 1.0f; float s = dm_gfx_out_scale();   // 画质档换了输出倍数（含过热降档）：让游戏重读分辨率参数位 | the graphics preset changed the output factor (including thermal steps): make the game re-read the resolution slot
+      if (atomic_load(&g_res_live) && s != last) { last = s; LOG("画质：输出分辨率倍数 %.2f → 游戏分辨率 %u x %u", s, (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); } }
     static int reg; if (!reg) { reg = 1; if (gate_obs_present(OBS_UI_PROJECT)) { gate_obs_set(OBS_UI_PROJECT, ui_project_obs); atomic_store(&g_proj_on, 1); } } int32_t *g = (int32_t *)(b + 0x211da38); int m = mode(), rw = atomic_load(&g_rw);
     if (!atomic_load(&g_world) && m != DM_UISCREEN_OFF) return;   // 不在局里：游戏自己按 16:9 出图，这对量不改写（出局那一下的写回见 dm_uiscreen_res_reread） | Not in a run: the game renders at 16:9 by itself, so this pair of values is not rewritten (for the write-back at the moment of leaving a run see dm_uiscreen_res_reread)
     if (m == DM_UISCREEN_OFF) { if (rw) { if (g[0] == rw && g[1] == atomic_load(&g_uh)) g[1] = atomic_load(&g_rh); atomic_store(&g_rw, 0); LOG("界面画面：关掉，屏幕高写回 %d", g[1]); } return; }   // 没打开过就什么都不碰 | If it was never turned on, touch nothing

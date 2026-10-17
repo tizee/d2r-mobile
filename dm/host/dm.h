@@ -102,6 +102,12 @@ void dm_guest_write_prepare(void *addr, size_t len);
 // 图形生命周期（hle_nvn.c）：on=1 挂起（之后提交 / 出图阻塞，返回前 GPU 在途工作清空），on=0 恢复；iOS 前端在进出后台时调用
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
 void dm_gfx_suspend(int on);
+int dm_gfx_level(void);            // 实际画质档 0..4（玩家选的 + 过热降档，hle_oe.c） | effective graphics preset 0..4 (player's choice + thermal steps, hle_oe.c)
+float dm_gfx_out_scale(void);      // 输出分辨率倍数（相对屏幕原生；Mac 恒 1） | output resolution factor (relative to the native screen; always 1 on Mac)
+void dm_gfx_thermal(int state);
+// 开发者性能浮层的一次读数（diag.c dm_perf_snapshot，前端每秒取两次） | One reading for the developer performance overlay (diag.c dm_perf_snapshot; the front end reads it twice a second)
+typedef struct { float fps, low1, worst_ms, gpu_ms, cpu_ms, s3; unsigned dropped; int level; uint32_t out_w, out_h; } dm_perf_snap;
+void dm_perf_snapshot(dm_perf_snap *o);    // 前端报系统温控档位（0..3） | the front end reports the system thermal state (0..3)
 void dm_gfx_shot_at(long k, const char *path);
 void dm_shot_written(const char *path, int ok);   // 图形侧截图写盘完成（diag.c：DM_TICK_HOLD=E:SHOT 据此解冻） | The graphics side finished writing a screenshot to disk (diag.c: DM_TICK_HOLD=E:SHOT unfreezes on this)
 void dm_host_shutdown(const char *why);   // 优雅退出（crash.c）：停后台线程、音频、图形清空后 _exit(0)；SIGTERM 与 iOS App 终止回调用   // 图形侧：当前出图帧之后第 k 帧截图（nvn_mtl.m） | Graceful exit (crash.c): stop background threads and audio, drain graphics, then _exit(0); used by SIGTERM and the iOS App termination callback   // graphics side: screenshot of the k-th frame after the current presented frame (nvn_mtl.m)

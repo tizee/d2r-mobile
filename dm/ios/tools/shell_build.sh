@@ -22,8 +22,8 @@ KIND=${1:-ios}; case $KIND in ios|mac) ;; *) echo "用法：shell_build.sh [ios|
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); SRC=$(cd "$HERE/../.." && pwd)        # SRC = dm/
 ROOT=${DM_ROOT:-$HOME/dm-work}; O=$ROOT/build/shell/$KIND; W=$O/tree; DD=$O/dd
 t() { echo "[$(date +%T)] $*"; }; die() { t "🔴 $*"; exit 1; }
-mkdir -p "$O" && rm -rf "$W" "$O/ref" "$O/app" "$O/D2RMobile-shell-build-input.zip" "$O/shell_manifest.txt" && mkdir -p "$W" "$O/ref" || die "建不了 $O"
-rsync -a --exclude '/ios/Gen' --exclude '/ios/DmIOS.xcodeproj' --exclude '.iosdd*' --exclude '/ios/local.env' "$SRC/" "$W/dm/" || die "拷源码树失败"
+mkdir -p "$O" && rm -rf "$O/ref" "$O/app" "$O/D2RMobile-shell-build-input.zip" "$O/shell_manifest.txt" && mkdir -p "$W" "$O/ref" || die "建不了 $O"   # 源码副本 $W 留着、下面增量同步：Gen/assets 与工程不丢，生成与编译都走缓存 | the source copy $W is kept and synced incrementally below: Gen/assets and the project survive, so generation and compilation hit their caches
+rsync -a --delete --exclude '/ios/Gen' --exclude '/ios/DmIOS.xcodeproj' --exclude '.iosdd*' --exclude '/ios/local.env' "$SRC/" "$W/dm/" || die "拷源码树失败"
 # 壳的包名只是占位：自签工具装机时会换成使用者自己的。团队号同理（不签名，用不到）
 # The shell's package name is only a placeholder: the sideloading tool replaces it with the user's own at install time. Same for the team ID (not signed, so it is not used)
 printf 'DM_TEAM_ID=0000000000\nDM_BUNDLE_ID=org.d2rmobile.app\nDM_FREE_ACCOUNT=1\n' > "$O/shell.env"; export DM_LOCAL_ENV=$O/shell.env DM_FREE_ACCOUNT=1 DM_ROOT=$ROOT

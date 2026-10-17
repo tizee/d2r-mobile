@@ -48,7 +48,8 @@ void dm_test_hover_at(float nx, float ny) { (void)nx; (void)ny; }
 int dm_ui_hover_now(int x, int y) { (void)x; (void)y; return 0; }
 void dm_item_compare(int on) { (void)on; }
 void dm_belt_expand(int on) { (void)on; }
-void dm_inv_sort(int page) { (void)page; }
+void dm_inv_sort(uint32_t owner_id, uint32_t owner_type, int page) { (void)owner_id; (void)owner_type; (void)page; }
+void dm_inv_sort_player(int page) { (void)page; }
 int dm_diag_difficulty(void) { return -1; }
 uint64_t dm_fs_commit_count(void) { return 0; }
 void dm_held_equip(int bodyloc) { (void)bodyloc; }

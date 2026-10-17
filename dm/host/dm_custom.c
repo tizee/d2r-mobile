@@ -1,15 +1,15 @@
 // 「自定义」设置：我们自己加的功能的启停开关。接口见 dm_custom.h。
-// 存储：存档提交目录旁的 sw_custom.txt（iOS 上在 Documents 里，升级包不丢），一行一个「键=0/1」；没有这个文件 / 没写的键 = 各键缺省（省电模式关，其余开）；不认识的行（旧版的 drop_filter、ver）读时跳过。
+// 存储：存档提交目录旁的 sw_custom.txt（iOS 上在 Documents 里，升级包不丢），一行一个「键=值」；没有这个文件 / 没写的键 = 各键缺省（见下面键表）；不认识的行（旧版的 drop_filter、ver）读时跳过。
 // 掉落筛选照红叶 mod 一件都不藏，整块拆掉，drop_filter 键与它的 ver=2 迁移一起删了
 // 不写进游戏自己的设置存档：不依赖它的格式与写盘时机，应用 / 放弃 / 默认由我们自己按原版选项页的语义做。
 // 界面：选项面板「自定义」页（借原版视频页 VideoOptionsPanel），每行一个原版勾选框，控件名 TouchCustom_<键>（布局 touch_layout.py 的 _custom_page）。勾选只记成待定值，
-// 「应用」（OptionsPanelMessage:AcceptChanges）才生效并存盘，「放弃」（CancelChanges）丢掉待定值，「默认」（ResetToDefaults）待定值回各键缺省（省电模式关、其余开；还要点应用）
+// 「应用」（OptionsPanelMessage:AcceptChanges）才生效并存盘，「放弃」（CancelChanges）丢掉待定值，「默认」（ResetToDefaults）待定值回各键缺省（还要点应用）
 // 「自定义」(Custom) settings: on/off switches for the features we added ourselves. For the interface see dm_custom.h.
-// Storage: sw_custom.txt next to the save commit directory (on iOS it is in Documents and survives app upgrades), one 'key=0/1' per line; without this file / for keys not written = each key's default (power-saving mode off, the rest on); unrecognized lines (drop_filter and ver from old versions) are skipped when reading.
+// Storage: sw_custom.txt next to the save commit directory (on iOS it is in Documents and survives app upgrades), one 'key=value' per line; without this file / for keys not written = each key's default; unrecognized lines (drop_filter and ver from old versions) are skipped when reading.
 // Drop filtering follows the Hongye community mod and hides nothing, so the whole block was removed, and the drop_filter key was deleted together with its ver=2 migration
 // Not written into the game's own settings save: no dependence on its format or on when it writes to disk; apply / discard / default are done by ourselves following the semantics of the original game's options page.
 // UI: the 「自定义」(Custom) page of the options panel (borrowing the original game's video page VideoOptionsPanel), one original-game checkbox per row, widget name TouchCustom_<key> (_custom_page in the layout touch_layout.py). Checking only records a pending value;
-// only 「应用」(Apply) (OptionsPanelMessage:AcceptChanges) makes it take effect and saves to disk, 「放弃」(Discard) (CancelChanges) throws away the pending values, and 「默认」(Default) (ResetToDefaults) sets the pending values back to each key's default (power-saving mode off, the rest on; Apply still has to be tapped)
+// only 「应用」(Apply) (OptionsPanelMessage:AcceptChanges) makes it take effect and saves to disk, 「放弃」(Discard) (CancelChanges) throws away the pending values, and 「默认」(Default) (ResetToDefaults) sets the pending values back to each key's default (Apply still has to be tapped)
 #include "dm_custom.h"
 #include "dm_widget.h"
 #include "dm_cursor.h"
@@ -18,19 +18,38 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "eco_fps", "q3d", "loot_filter", "auto_buff", "touch_swap_above" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS）：手柄在这页按这个顺序上下选行 | Order = row order of the Custom page from top to bottom (touch_layout.py _CUSTOM_ROWS): the controller selects rows up/down on this page in this order
-#define NK (int)(sizeof k_keys / sizeof *k_keys)
-static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0 };   // 缺省值：省电模式（30 帧）缺省关、3D 画质缺省流畅优先（q3d=0），换组默认在传送门左侧，其余缺省开 | Defaults: power-saving mode (30 fps) off, 3D quality smoothness first (q3d=0), switch left of portal by default, everything else on
-// q3d（3D 画质）：0 = 流畅优先（掉帧就自动降 3D 比例）、1 = 画质优先（不自动降）。生效 = 调 hle_oe.c 的 dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走。
-// 页上是上下两项单选（同语言行）：TouchCustom_q3d 是「画质优先」那格（勾上 = 1），TouchCustom_q3d_smooth 是它的反面
-// q3d (3D quality): 0 = smoothness first (automatically lowers the 3D scale on frame drops), 1 = quality first (no automatic lowering). Applied by calling hle_oe.c's dm_3d_quality_mode_set, immediately on load and on tapping "Apply", so the controller follows the new setting from the next frame.
-// On the page it is a stacked two-option radio (like the language row): TouchCustom_q3d is the "Quality first" cell (checked = 1), TouchCustom_q3d_smooth is its inverse
-#define K_Q3D 12
-#define K_TOUCH_SWAP 15
-void dm_3d_quality_mode_set(int mode);
-static const char *rev_box(int i) { return i == 0 ? "TouchCustom_lang_zh" : i == K_Q3D ? "TouchCustom_q3d_smooth" : i == K_TOUCH_SWAP ? "TouchCustom_touch_swap_above_near" : NULL; }   // 单选行「反面那一项」的勾选框 | Checkbox of the radio row's "inverse option"
+// 键表：顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_KEYS，语言行在最前）；手柄在这页按这个顺序上下选行。
+// n = 0：勾选框（值 0 / 1）；n > 1：左右选择行（值 0..n-1，页上「◀ 值 ▶」，到头不回绕）。
+// 画质 gfx_q：0 原生高清 / 1 高 / 2 均衡（缺省）/ 3 流畅 / 4 低（输出分辨率与 3D 比例，见 hle_oe.c dm_gfx_*）；最高帧率 fps_max：30 / 40 / 60（缺省 60）。
+// 掉率 dq_*：×1 / ×2 / ×3 / ×5 / ×10（缺省 ×1 = 原版），生效见 dm_elysium.c。开发者 perf_hud / perf_log：性能浮层与 2 秒一行的 perf.txt（缺省关）。
+// 旧版的 eco_fps（省电模式）、q3d（3D 画质）两键并进画质 / 帧率两行，旧文件里的这两行读时跳过
+// Key table: order = row order of the Custom page from top to bottom (touch_layout.py _CUSTOM_KEYS, the language row first); the controller selects rows up/down on this page in this order.
+// n = 0: checkbox (value 0 / 1); n > 1: left/right selector row (value 0..n-1, shown as "◀ value ▶" on the page, no wrap-around at the ends).
+// Graphics gfx_q: 0 native / 1 high / 2 balanced (default) / 3 smooth / 4 low (output resolution and 3D scale, see hle_oe.c dm_gfx_*); max frame rate fps_max: 30 / 40 / 60 (default 60).
+// Drop rates dq_*: x1 / x2 / x3 / x5 / x10 (default x1 = original game), applied in dm_elysium.c. Developer perf_hud / perf_log: performance overlay and a perf.txt line every 2 s (default off).
+// The old eco_fps (power saving) and q3d (3D quality) keys are folded into the graphics / frame-rate rows; those lines in old files are skipped on read
+typedef struct { const char *key; int def, n; } ckey;
+static const ckey k_tab[] = {
+    { "lang_en", 0, 0 }, { "gfx_q", 2, 5 }, { "fps_max", 2, 3 },
+    { "auto_mana", 1, 0 }, { "merc_pot", 1, 0 }, { "drop_light", 1, 0 }, { "map_mark", 1, 0 }, { "item_notes", 1, 0 }, { "icloud", 1, 0 }, { "pot_pick", 1, 0 },
+    { "drop_haptic", 1, 0 }, { "gem_pick", 1, 0 }, { "store_btn", 1, 0 }, { "loot_filter", 1, 0 }, { "auto_buff", 1, 0 }, { "nav_pad", 1, 0 }, { "touch_swap_above", 0, 2 },
+    { "dq_unique", 0, 5 }, { "dq_set", 0, 5 }, { "dq_rare", 0, 5 }, { "dq_magic", 0, 5 },
+    { "perf_hud", 0, 0 }, { "perf_log", 0, 0 } };
+#define NK (int)(sizeof k_tab / sizeof *k_tab)
+static const int k_dq_mul[5] = { 1, 2, 3, 5, 10 }, k_fps[3] = { 30, 40, 60 };
+static int sel_n(int i) { return k_tab[i].n; }
+const char *dm_str(uint8_t *main_base, const char *key);
+static uint8_t *main_base(void);
+static void sel_text(int i, int v, char *out, size_t cap) {   // 选择行当前值的字 | text of a selector row's current value
+    const char *k = k_tab[i].key;
+    if (!strcmp(k, "gfx_q")) { char kk[16]; snprintf(kk, sizeof kk, "dmGfxQ%d", v); const char *t = main_base() ? dm_str(main_base(), kk) : NULL; snprintf(out, cap, "%s", t ? t : kk); }
+    else if (!strcmp(k, "fps_max")) snprintf(out, cap, "%d", k_fps[v]);
+    else if (!strcmp(k, "touch_swap_above")) { const char *t = main_base() ? dm_str(main_base(), v ? "dmCustomTouchSwapFar" : "dmCustomTouchSwapNear") : NULL; snprintf(out, cap, "%s", t ? t : (v ? "far" : "near")); }
+    else snprintf(out, cap, "x%d", k_dq_mul[v]);
+}
 static _Atomic int g_val[NK];        // 已生效：1 开 / 0 关 | In effect: 1 on / 0 off
 static _Atomic int g_pend[NK];       // 选项页上改了还没应用：-1 = 没改 | Changed on the options page but not applied yet: -1 = not changed
 static _Atomic int g_loaded;         // 0 没读盘 / 1 已读 | 0 not read from disk / 1 read
@@ -48,12 +67,12 @@ static _Atomic int g_lang_explicit = -1;   // 文件里写着的 lang_en：-1 �
 // so a separate line merc_pot_v2 is recorded: it is written only when the player has changed this item on the page after the default was changed to on. On load, if merc_pot_v2 exists it is authoritative; absent = never touched under the new default → on
 // (merc_pot=1 in an old file is also on, the same result). The merc_pot line is still written with the current value, so packages of older versions read it without error
 static _Atomic int g_merc_explicit = -1;   // 文件里写着的 merc_pot_v2：-1 没写 / 0 / 1 | merc_pot_v2 as written in the file: -1 not written / 0 / 1
-#define K_MERC 2
+#define K_MERC 4
 int dm_lang_zh(void);
 static _Atomic int g_repaint;        // 默认 / 放弃之后：页上的勾选框按待定值 / 生效值重摆一遍 | After default / discard: lay out the checkboxes on the page again according to pending values / effective values
 
 const char *dm_save_commitdir(void);
-static int key_index(const char *k) { if (k) for (int i = 0; i < NK; i++) if (!strcmp(k, k_keys[i])) return i; return -1; }
+static int key_index(const char *k) { if (k) for (int i = 0; i < NK; i++) if (!strcmp(k, k_tab[i].key)) return i; return -1; }
 static char g_dir[1024];   // iOS 外壳启动时给的 Documents（main.m）：启动期（存档挂上之前）就要能读，覆盖层选择用 | Documents given by the iOS shell at startup (main.m): must be readable already during startup (before the save is mounted), used for overlay selection
 void dm_custom_init(const char *dir) { if (dir) strlcpy(g_dir, dir, sizeof g_dir); }
 static int file_path(char *p, size_t n) {
@@ -63,41 +82,55 @@ static int file_path(char *p, size_t n) {
 static void load_once(void) {
     if (atomic_load(&g_loaded)) return;
     char p[1100]; if (!file_path(p, sizeof p)) return;   // 存档还没挂上：先按缺省开答，挂上后再读 | The save is not mounted yet: answer with the default (on) for now, and read again after it is mounted
-    int v[NK]; for (int i = 0; i < NK; i++) v[i] = k_def[i];
+    int v[NK]; for (int i = 0; i < NK; i++) v[i] = k_tab[i].def;
     FILE *f = fopen(p, "r"); char ln[128];
     int lang = -1, merc = -1;
-    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) v[i] = eq[1] != '0'; if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
+    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) { if (sel_n(i)) { int d = atoi(eq + 1); v[i] = d >= 0 && d < sel_n(i) ? d : k_tab[i].def; } else v[i] = eq[1] != '0'; } if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
     if (f) fclose(f);
     if (lang < 0) v[0] = !dm_lang_zh();   // 没写过：按当前实际语言显示 | Never written: display according to the current actual language
     atomic_store(&g_lang_explicit, lang);
-    v[K_MERC] = merc < 0 ? k_def[K_MERC] : merc; atomic_store(&g_merc_explicit, merc);
+    v[K_MERC] = merc < 0 ? k_tab[K_MERC].def : merc; atomic_store(&g_merc_explicit, merc);
     for (int i = 0; i < NK; i++) { atomic_store(&g_val[i], v[i]); atomic_store(&g_pend[i], -1); }
-    dm_3d_quality_mode_set(v[K_Q3D]); LOG("自定义设置：3D 画质读盘为%s（q3d=%d，已交给 3D 比例控制）", v[K_Q3D] ? "画质优先" : "流畅优先", v[K_Q3D]);
-    if (!atomic_exchange(&g_loaded, 1)) LOG("自定义设置：读盘 %s%s lang_en=%d%s auto_mana=%d merc_pot=%d drop_light=%d map_mark=%d item_notes=%d icloud=%d pot_pick=%d drop_haptic=%d gem_pick=%d store_btn=%d eco_fps=%d", p, f ? "" : "（没有文件，全按缺省）", v[0], lang < 0 ? "（没写，按当前语言）" : "", v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
+    if (!atomic_exchange(&g_loaded, 1)) { char all[512]; size_t L = 0; all[0] = 0; for (int i = 0; i < NK && L < sizeof all; i++) L += snprintf(all + L, sizeof all - L, " %s=%d", k_tab[i].key, v[i]);
+        LOG("自定义设置：读盘 %s%s%s%s", p, f ? "" : "（没有文件，全按缺省）", lang < 0 ? "（语言没写，按当前语言）" : "", all); }
 }
 int dm_custom_get(const char *key) {
     load_once(); int i = key_index(key); if (i < 0) return 1;
-    return atomic_load(&g_loaded) ? atomic_load(&g_val[i]) : k_def[i];
+    return atomic_load(&g_loaded) ? atomic_load(&g_val[i]) : k_tab[i].def;
 }
+int dm_custom_drop_mul(int q) { static const char *const k[4] = { "dq_unique", "dq_set", "dq_rare", "dq_magic" }; if (q < 0 || q > 3) return 1; int d = dm_custom_get(k[q]); return k_dq_mul[d >= 0 && d < 5 ? d : 0]; }
+int dm_custom_gfx_quality(void) { int v = dm_custom_get("gfx_q"); return v >= 0 && v < 5 ? v : 2; }
+static _Atomic int g_pad_edit_req;   // 自定义页「调整屏幕按键」点了、前端还没取走 | Custom page "Adjust on-screen keys" tapped, not yet taken by the front end
+int dm_custom_take_pad_edit(void) { return atomic_exchange(&g_pad_edit_req, 0); }
+static _Atomic unsigned g_gen;   // 每次「应用」改了值加一（dm_custom_gen） | incremented each time 「应用」(Apply) changes a value (dm_custom_gen)
+unsigned dm_custom_gen(void) { return atomic_load(&g_gen); }
 int dm_custom_lang_explicit(void) { load_once(); return atomic_load(&g_loaded) ? atomic_load(&g_lang_explicit) : -1; }
-int dm_fps_setting(void) { return dm_custom_get("eco_fps") ? 30 : 60; }   // 图形层 nvn_mtl.m mtl_fps_target 每帧读（弱符号的强定义） | Read every frame by mtl_fps_target in the graphics layer nvn_mtl.m (strong definition of a weak symbol)
+int dm_fps_setting(void) { int v = dm_custom_get("fps_max"); return k_fps[v >= 0 && v < 3 ? v : 2]; }   // 图形层 nvn_mtl.m mtl_fps_target 每帧读（弱符号的强定义） | Read every frame by mtl_fps_target in the graphics layer nvn_mtl.m (strong definition of a weak symbol)
 static void save(void) {
     char p[1100], t[1120]; if (!file_path(p, sizeof p)) { LOG("【红】自定义设置：存档目录没挂上，没存盘"); return; }
     snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); int ok = f != NULL;
-    for (int i = 0; ok && i < NK; i++) { if (i == 0 && atomic_load(&g_lang_explicit) < 0) continue; ok = fprintf(f, "%s=%d\n", k_keys[i], atomic_load(&g_val[i])) > 0; }   // lang_en 只在玩家真改过之后才写进文件 | lang_en is written to the file only after the player has actually changed it
+    for (int i = 0; ok && i < NK; i++) { if (i == 0 && atomic_load(&g_lang_explicit) < 0) continue; ok = fprintf(f, "%s=%d\n", k_tab[i].key, atomic_load(&g_val[i])) > 0; }   // lang_en 只在玩家真改过之后才写进文件 | lang_en is written to the file only after the player has actually changed it
     if (ok && atomic_load(&g_merc_explicit) >= 0) ok = fprintf(f, "merc_pot_v2=%d\n", atomic_load(&g_merc_explicit)) > 0;
     if (f) ok = fclose(f) == 0 && ok;
     if (ok) ok = rename(t, p) == 0;   // 先写临时文件再换名：写到一半被杀也不会留下半个文件 | Write a temporary file first and then rename: being killed halfway through the write does not leave half a file behind
     LOG("自定义设置：存盘%s", ok ? "" : "【红】失败");
 }
 void dm_custom_on_uimsg(const char *cat, const char *act, const char *arg) {
-    (void)arg; if (!cat || !act || strcmp(cat, "OptionsPanelMessage")) return;
+    if (!cat || !act) return;
+    // 选择行的左右箭头（ButtonWidget，点击发 PanelManager:ClosePanel:TouchCustom_<键>_L / TouchCustom_<键>，关一个不存在的面板 = 空操作）：待定值走一格，到头不动
+    // Left/right arrows of a selector row (ButtonWidget; a tap sends PanelManager:ClosePanel:TouchCustom_<key>_L / TouchCustom_<key>, closing a panel that does not exist = no-op): the pending value moves one step, stopping at the ends
+    if (!strcmp(cat, "PanelManager") && !strcmp(act, "ClosePanel") && arg && !strcmp(arg, "TouchCustom_padedit")) { atomic_store(&g_pad_edit_req, 1); LOG("自定义设置：点了「调整屏幕按键」"); return; }   // 前端取走后进布局编辑（front_ios.m） | the front end takes it and enters layout editing (front_ios.m)
+    if (!strcmp(cat, "PanelManager") && !strcmp(act, "ClosePanel") && arg && !strncmp(arg, "TouchCustom_", 12)) { char k[40]; strlcpy(k, arg + 12, sizeof k); size_t L = strlen(k); int left = L > 2 && !strcmp(k + L - 2, "_L"); if (left) k[L - 2] = 0;
+        load_once(); int i = key_index(k); if (i >= 0 && sel_n(i)) { int p0 = atomic_load(&g_pend[i]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[i]), to = sh + (left ? -1 : 1); if (to < 0) to = 0; if (to >= sel_n(i)) to = sel_n(i) - 1;
+            if (to != sh) { atomic_store(&g_pend[i], to); char t[48]; sel_text(i, to, t, sizeof t); LOG("自定义设置：%s → %s（点「应用」生效）", k, t); } }
+        return; }
+    if (strcmp(cat, "OptionsPanelMessage")) return;
     load_once();
     if (!strcmp(act, "AcceptChanges")) { int ch = 0;
-        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == K_Q3D) { int dm_3d_quality_mode_get(void); float dm_3d_scale_cur(void); dm_3d_quality_mode_set(pd); LOG("自定义设置：3D 画质 → %s（已交给 3D 比例控制，读回模式 %d，此刻 3D 比例 %.2f）", pd ? "画质优先" : "流畅优先", dm_3d_quality_mode_get(), dm_3d_scale_cur()); } if (i == 0) atomic_store(&g_lang_explicit, pd); if (i == K_MERC) atomic_store(&g_merc_explicit, pd); LOG("自定义设置：%s → %s（应用%s）", k_keys[i], pd ? "开" : "关", i == 0 ? "；语言下次启动生效" : ""); } }
-        if (ch) save(); }
+        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == 0) atomic_store(&g_lang_explicit, pd); if (i == K_MERC) atomic_store(&g_merc_explicit, pd); if (sel_n(i)) { char t[48]; sel_text(i, pd, t, sizeof t); LOG("自定义设置：%s → %s（应用）", k_tab[i].key, t); } else LOG("自定义设置：%s → %s（应用%s）", k_tab[i].key, pd ? "开" : "关", i == 0 ? "；语言下次启动生效" : ""); } }
+        if (ch) { atomic_fetch_add(&g_gen, 1); save(); } }
     else if (!strcmp(act, "CancelChanges")) { for (int i = 0; i < NK; i++) atomic_store(&g_pend[i], -1); atomic_store(&g_repaint, 1); }
-    else if (!strcmp(act, "ResetToDefaults")) { for (int i = 1; i < NK; i++) atomic_store(&g_pend[i], k_def[i]); atomic_store(&g_repaint, 1); }   // 从 1 起：语言那一格不归「默认」管 | Starts from 1: the language cell is not governed by 「默认」(Default)
+    else if (!strcmp(act, "ResetToDefaults")) { for (int i = 1; i < NK; i++) atomic_store(&g_pend[i], k_tab[i].def); atomic_store(&g_repaint, 1); }   // 从 1 起：语言那一格不归「默认」管 | Starts from 1: the language cell is not governed by 「默认」(Default)
 }
 
 // ---- 选项页上的勾选框
@@ -122,6 +155,11 @@ static void set_toggle(uint64_t w, int on) {
     static const int32_t fr[2][4] = { { 0, 1, 3, 2 }, { 4, 5, 6, -1 } };
     *(uint8_t *)(w + 0xa88) = on != 0; memcpy((void *)(w + 0x6e8), fr[on != 0], sizeof fr[0]); *(int32_t *)(w + 0x610) = fr[on != 0][0];
 }
+static void set_text(uint64_t w, const char *s) {   // 同 dm_kills.c kb_text：文字框（DM_VT_TEXT）赋值 0x136e5c + 重排 0xadc434，字没变不写 | Same as kb_text in dm_kills.c: text box (DM_VT_TEXT) assign 0x136e5c + relayout 0xadc434; not written if unchanged
+    uint8_t *b = main_base(); if (!dm_widget_is(b, w, DM_VT_TEXT)) return;
+    size_t n = strlen(s); if (*(uint64_t *)(w + 0x90) == n && !memcmp(*(const char **)(w + 0x88), s, n)) return;
+    ((void *(*)(uint64_t, const char *, uint64_t))(b + 0x136e5c))(w + 0x88, s, n); ((void (*)(uint64_t))(b + 0xadc434))(w);
+}
 void dm_custom_ui_pump(unsigned long long root) {
     if (!root || !main_base()) return;
     static dm_wref seen[NK];   // 每行最近见到的勾选框（带界面代号：重建后取到 0 = 页刚出现） | Most recently seen checkbox of each row (with UI generation: 0 after a rebuild = page just appeared)
@@ -139,13 +177,12 @@ void dm_custom_ui_pump(unsigned long long root) {
       { uint64_t cm = find_w(root, "ConfirmationModal", 1); if (cm && *(uint8_t *)(cm + 0x50)) pad = 0; }   // 原版「设定已更改，应用 / 放弃」确认框开着：键全还给它（实测：不让的话 A 落在我们这一行上、点不到「应用」） | The original "Settings changed, Apply / Discard" confirmation box is open: hand all keys back to it (measured: otherwise A lands on our row and "Apply" cannot be reached)
       if (dm_wref_get(&sel_sp) != sp) { dm_wref_set(&sel_sp, sp); sel = 0; }
       uint64_t dm = find_w(sp, "TouchCustomSel", 0), tw = 0, cw = 0; char nm[64];
-      if (pad) { uint64_t ev = dm_padmode_page_keys(DM_BTN_UP | DM_BTN_DOWN | DM_BTN_A);
+      if (pad) { uint64_t ev = dm_padmode_page_keys(DM_BTN_UP | DM_BTN_DOWN | DM_BTN_A | DM_BTN_LEFT | DM_BTN_RIGHT);
           if (ev & DM_BTN_DOWN) sel = sel + 1 < NK ? sel + 1 : sel; else if (ev & DM_BTN_UP) sel = sel > 0 ? sel - 1 : 0;
-          snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[sel]); cw = find_w(sp, nm, 0); snprintf(nm, sizeof nm, "TouchCustom_%s_Text", k_keys[sel]); tw = find_w(sp, nm, 0);
+          snprintf(nm, sizeof nm, "TouchCustom_%s", k_tab[sel].key); cw = find_w(sp, nm, 0); snprintf(nm, sizeof nm, "TouchCustom_%s_Text", k_tab[sel].key); tw = find_w(sp, nm, 0);
+          if (sel_n(sel) && (ev & (DM_BTN_LEFT | DM_BTN_RIGHT | DM_BTN_A))) { char a[48]; snprintf(a, sizeof a, "TouchCustom_%s%s", k_tab[sel].key, (ev & DM_BTN_LEFT) ? "_L" : ""); dm_custom_on_uimsg("PanelManager", "ClosePanel", a); ev &= ~(uint64_t)DM_BTN_A; }   // 选择行：十字键左右 / A 走一格（A = 向右） | selector row: D-pad left/right / A step once (A = right)
           if ((ev & DM_BTN_A) && cw && dm_wref_get(&seen[sel]) == cw) {
-              if (sel == K_Q3D || sel == K_TOUCH_SWAP) { int p0 = atomic_load(&g_pend[sel]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[sel]); atomic_store(&g_pend[sel], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, rev_box(sel), 0); if (z) set_toggle(z, sh); }
-                  LOG("自定义设置：%s → %d（手柄 A 在两项间切换；点「应用」生效）",k_keys[sel],!sh); }
-              else if (sel == 0) { int p0 = atomic_load(&g_pend[0]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[0]); atomic_store(&g_pend[0], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, "TouchCustom_lang_zh", 0); if (z) set_toggle(z, sh); }   // 语言行是单选的两项：两个框当场摆好（只改待定值的话，下面读框状态会把没跟上的框当成玩家点的） | The language row is a single choice between two items: both boxes are set on the spot (if only the pending value were changed, the code below that reads the box states would take the box that has not caught up as a player tap)
+              if (sel == 0) { int p0 = atomic_load(&g_pend[0]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[0]); atomic_store(&g_pend[0], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, "TouchCustom_lang_zh", 0); if (z) set_toggle(z, sh); }   // 语言行是单选的两项：两个框当场摆好（只改待定值的话，下面读框状态会把没跟上的框当成玩家点的） | The language row is a single choice between two items: both boxes are set on the spot (if only the pending value were changed, the code below that reads the box states would take the box that has not caught up as a player tap)
                   LOG("自定义设置：语言 → %s（手柄 A 在两项间切换；点「应用」生效）", !sh ? "English" : "中文"); }
               else set_toggle(cw, !TOGGLED(cw)); } }
       if (dm) { int32_t *r = (int32_t *)(dm + 0x70), want[4] = { 99999, 0, r[2], r[3] };   /* 不用时只把 x 挪出屏：它在滚动区里，y 放远了会撑大可滚范围 | when unused only x is moved off screen: it is inside the scroll area, and a far-away y would enlarge the scrollable range */
@@ -161,17 +198,20 @@ void dm_custom_ui_pump(unsigned long long root) {
           if (sv && f - lf >= 4) { int32_t *t = (int32_t *)(tw + 0x70), *c = (int32_t *)(cw + 0x70); int top = (t[1] < c[1] ? t[1] : c[1]) - 10, bot = (t[1] + t[3] > c[1] + c[3] ? t[1] + t[3] : c[1] + c[3]) + 10;
               int off = -*(int32_t *)(view + 0x74), vh = *(int32_t *)(sv + 0x7c); if (vh <= 0) vh = 1260; void dm_ui_wheel_on(uint64_t, int); if (sel == 0) top = 0;   /* 选回第一行：一直滚到最顶，把标题行露出来 | selection back on the first row: scroll all the way to the top so that the header row is revealed */
               if (top < off) { lf = f; dm_ui_wheel_on(sv, 1); } else if (bot > off + vh) { lf = f; dm_ui_wheel_on(sv, -1); } } } }
-    for (int i = 0; i < NK; i++) { char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
+    for (int i = 0; i < NK; i++) { char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_tab[i].key);
         uint64_t w = find_w(sp, nm, 0); if (!w || !*(uint8_t *)(w + 0x50)) continue;
         int pd0 = atomic_load(&g_pend[i]), want = pd0 >= 0 ? pd0 : atomic_load(&g_val[i]);
-        uint64_t z = rev_box(i) ? find_w(sp, rev_box(i), 0) : 0;   // 单选行（语言：并排的「中文」「English」；3D 画质：上下的「流畅优先」「画质优先」）：存的仍是一个键，反面那一项是它的反面 | Radio row (language: side-by-side "中文" / "English"; 3D quality: stacked "Smoothness first" / "Quality first"): still stores a single key, and the other option is its inverse
+        if (sel_n(i)) {   // 选择行：值写进中间的文字控件（点箭头在 dm_custom_on_uimsg 里收） | Selector row: the value goes into the middle text widget (arrow taps are handled in dm_custom_on_uimsg)
+            char vn[48], vt[48]; snprintf(vn, sizeof vn, "TouchCustom_%s_Val", k_tab[i].key); sel_text(i, want, vt, sizeof vt); set_text(find_w(sp, vn, 0), vt);
+            continue; }
+        uint64_t z = i == 0 ? find_w(sp, "TouchCustom_lang_zh", 0) : 0;   // 语言行：并排的「中文」「English」两项单选，存的仍是一个键 | Language row: side-by-side 「中文」/「English」 radio, still one key
         if (dm_wref_get(&seen[i]) != w) { dm_wref_set(&seen[i], w); set_toggle(w, want); if (z) set_toggle(z, !want); continue; }   // 页刚出现（布局里一律是没勾）：先摆成该显示的值，这一帧不当玩家点了 | The page has just appeared (in the layout everything is unchecked): first set it to the value it should show, and do not treat this frame as a player tap
         int on = TOGGLED(w), pd = atomic_load(&g_pend[i]), shown = pd >= 0 ? pd : atomic_load(&g_val[i]);
         if (z) {   // 点没选中的那一项 = 选它；点已选中的那一项不变（摆回勾上） | Tapping the item that is not selected = select it; tapping the one already selected changes nothing (it is put back to checked)
             int zon = TOGGLED(z), to = on != shown ? (on ? 1 : shown) : zon != !shown ? (zon ? 0 : shown) : shown;
-            if (to != shown) { atomic_store(&g_pend[i], to); if (i == 0) LOG("自定义设置：语言 → %s（点「应用」生效）", to ? "English" : "中文"); else LOG("自定义设置：%s → %d（点「应用」生效）",k_keys[i],to); }
+            if (to != shown) { atomic_store(&g_pend[i], to); LOG("自定义设置：语言 → %s（点「应用」生效）", to ? "English" : "中文"); }
             if (TOGGLED(w) != to) set_toggle(w, to); if (TOGGLED(z) != !to) set_toggle(z, !to); continue; }
-        if (on != shown) { atomic_store(&g_pend[i], on); LOG("自定义设置：%s 勾选框 → %s（点「应用」生效）", k_keys[i], on ? "勾上" : "取消"); } }
+        if (on != shown) { atomic_store(&g_pend[i], on); LOG("自定义设置：%s 勾选框 → %s（点「应用」生效）", k_tab[i].key, on ? "勾上" : "取消"); } }
     // 语言那一行下面的「点应用后把 App 关掉重开」提示（TouchCustomLangHint，布局里先放在屏外）：勾选框此刻显示的值与正在跑的语言不一致时挪到标签正下方（横坐标取标签的）
     // The "tap Apply, then close and reopen the app" hint under the language row (TouchCustomLangHint, placed off screen in the layout): moved right under the label (taking the label's x) when the value the checkboxes currently show differs from the language now running
     { uint64_t lw = find_w(sp, "TouchCustom_lang_en_Text", 0); int pd = atomic_load(&g_pend[0]), shown = pd >= 0 ? pd : atomic_load(&g_val[0]), diff = shown != !dm_lang_zh();

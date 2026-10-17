@@ -37,6 +37,73 @@ static float g_edge_b;
 void dm_tc_set_edge_bottom(float bottom) { g_edge_b = isfinite(bottom) && bottom > 0 ? bottom : 0; }
 void dm_tc_set_safe_insets(float left, float right) { g_safe_l = isfinite(left) && left > 0 ? left : 0; g_safe_r = isfinite(right) && right > 0 ? right : 0; }
 
+/* ---- 面板 / 对话态的屏幕按键（头文件 dm_tc_pad_*） | On-screen keys of panel / dialog state (header dm_tc_pad_*) ---- */
+static dm_tc_pad_cfg g_pad = { .scale = { 1, 1, 1 }, .alpha = { 0.6f, 0.6f, 0.6f } };
+void dm_tc_pad_cfg_default(dm_tc_pad_cfg *c) { memset(c, 0, sizeof *c); for (int g = 0; g < DM_TC_PADG_N; ++g) { c->scale[g] = 1; c->alpha[g] = 0.6f; } }
+int dm_tc_pad_cfg_valid(const dm_tc_pad_cfg *c) {
+    for (int g = 0; g < DM_TC_PADG_N; ++g) if (!isfinite(c->dx[g]) || !isfinite(c->dy[g]) || fabsf(c->dx[g]) > 1 || fabsf(c->dy[g]) > 1 || !isfinite(c->scale[g]) || c->scale[g] < DM_TC_PAD_SCALE_MIN || c->scale[g] > DM_TC_PAD_SCALE_MAX
+                                               || !isfinite(c->alpha[g]) || c->alpha[g] < DM_TC_PAD_ALPHA_MIN || c->alpha[g] > 1) return 0;
+    return 1;
+}
+void dm_tc_set_pad_cfg(const dm_tc_pad_cfg *c) { if (c && dm_tc_pad_cfg_valid(c)) g_pad = *c; else dm_tc_pad_cfg_default(&g_pad); }
+void dm_tc_get_pad_cfg(dm_tc_pad_cfg *c) { *c = g_pad; }
+/* 缺省位置：摇杆在战斗摇杆的静止位（同样大小，底盘半径 60），A 在右下、B 在 A 的左下（任天堂排法：右 A 下 B）。各组加上设置里的偏移后夹回屏内，夹回后的偏移写回设置。
+   调整面板：屏幕顶部正中，两行「− 值 +」（大小、透明度）+ 一行「复位 / 完成」；面板钮大小不跟设置走（缩到最小也点得到）
+   Default positions: the stick at the combat stick's rest position (same size, base radius 60), A at the bottom right, B to the lower left of A (Nintendo layout: A right, B bottom). Each group gets the offset from the settings and is clamped onto the screen, and the clamped offset is written back.
+   Adjust panel: top center of the screen, two rows of "− value +" (size, opacity) + one row "reset / done"; the panel buttons' size ignores the settings (still tappable at the smallest size) */
+static void pad_layout(dm_tc_layout *l) {
+    float w = l->width, h = l->height, kb = scale_for(l);
+    if (w <= 0 || h <= 0) return;
+    float r[DM_TC_PADG_N], cx[DM_TC_PADG_N], cy[DM_TC_PADG_N];
+    for (int g = 0; g < DM_TC_PADG_N; ++g) r[g] = (g == DM_TC_PAD_STICK ? 60 : 28) * kb * g_pad.scale[g];
+    cx[DM_TC_PAD_STICK] = l->joy_x; cy[DM_TC_PAD_STICK] = l->joy_y;
+    cx[DM_TC_PAD_A] = w - fmaxf(g_safe_r, 8*kb) - 40*kb; cy[DM_TC_PAD_A] = h - 110*kb;
+    cx[DM_TC_PAD_B] = cx[DM_TC_PAD_A] - 72*kb; cy[DM_TC_PAD_B] = h - 52*kb;
+    for (int g = 0; g < DM_TC_PADG_N; ++g) {
+        float x = cx[g] + g_pad.dx[g]*w, y = cy[g] + g_pad.dy[g]*h, e = r[g];
+        x = fminf(fmaxf(x, e), w - e); y = fminf(fmaxf(y, e), h - e);
+        g_pad.dx[g] = (x - cx[g]) / w; g_pad.dy[g] = (y - cy[g]) / h;
+        l->pad[g] = (dm_tc_target){ x, y, r[g], g == DM_TC_PAD_A ? DM_BTN_A : g == DM_TC_PAD_B ? DM_BTN_B : 0 };
+    }
+    float px = w/2, py = 34*kb, br = 20*kb;   /* 调整面板：钮心 | adjust panel: button centers */
+    l->pad[DM_TC_PAD_SIZE_DEC] = (dm_tc_target){ px - 90*kb, py, br, 0 };      l->pad[DM_TC_PAD_SIZE_INC] = (dm_tc_target){ px + 90*kb, py, br, 0 };
+    l->pad[DM_TC_PAD_ALPHA_DEC] = (dm_tc_target){ px - 90*kb, py + 46*kb, br, 0 }; l->pad[DM_TC_PAD_ALPHA_INC] = (dm_tc_target){ px + 90*kb, py + 46*kb, br, 0 };
+    l->pad[DM_TC_PAD_RESET] = (dm_tc_target){ px - 50*kb, py + 92*kb, br, 0 };  l->pad[DM_TC_PAD_DONE] = (dm_tc_target){ px + 50*kb, py + 92*kb, br, 0 };
+}
+int dm_tc_pad_hit(const dm_tc_state *s, float x, float y) {
+    if (!s->navigation_mode || !s->pad_on || !isfinite(x) || !isfinite(y)) return -1;
+    for (int i = DM_TC_PAD_N - 1; i >= 0; --i) {   /* 倒序：面板钮先于键 | reverse order: panel buttons before keys */
+        if (i >= DM_TC_PADG_N && !s->pad_edit) continue;
+        if (i >= DM_TC_PADG_N && i < DM_TC_PAD_RESET && s->pad_sel < 0) continue;   /* 没选中键时只有「完成」 | with no key selected only "done" exists */
+        if (i == DM_TC_PAD_RESET && s->pad_sel < 0) continue;
+        const dm_tc_target *t = &s->layout.pad[i];
+        float k = i == DM_TC_PAD_STICK ? 1.2f : 1.0f;   /* 摇杆底盘外沿放宽两成，手指落在边上也算 | the stick base rim is widened by 20%, landing on the edge still counts */
+        if (t->r > 0 && hypotf(x - t->x, y - t->y) <= t->r * k) return i;
+    }
+    return -1;
+}
+static int pad_finger(const dm_tc_finger *f) { return f->active && f->target >= DM_TC_PAD0 && f->target < DM_TC_PAD0 + DM_TC_PAD_N; }
+static int pad_drag_finger(const dm_tc_finger *f) { return f->active && f->target >= DM_TC_PADDRAG0 && f->target < DM_TC_PADDRAG0 + DM_TC_PADG_N; }
+/* 屏幕摇杆这根手指此刻对应的十字键：按手指相对落点的位移取主轴，过死区才有；没有 = 0 | the D-pad key the stick finger maps to right now: the dominant axis of the finger's displacement from the touch point, only past the dead zone; none = 0 */
+static uint64_t pad_stick_dir(const dm_tc_state *s, const dm_tc_finger *f) {
+    float dx = f->x - s->pad_ox, dy = f->y - s->pad_oy;
+    if (hypotf(dx, dy) <= DM_TC_PAD_DEAD_PT * scale_for(&s->layout)) return 0;
+    return fabsf(dx) > fabsf(dy) ? (dx > 0 ? DM_BTN_RIGHT : DM_BTN_LEFT) : (dy > 0 ? DM_BTN_DOWN : DM_BTN_UP);
+}
+static void update(dm_tc_state *s);
+void dm_tc_set_pad_edit(dm_tc_state *s, int on) {
+    on = !!on; if (on == s->pad_edit) return;
+    if (!on) ++s->pad_cfg_seq;   /* 出编辑 = 完成，前端存盘 | leaving editing = done, the front end saves */
+    for (int i = 0; i < DM_TC_MAX_TOUCH; ++i) if (pad_finger(&s->finger[i]) || pad_drag_finger(&s->finger[i])) s->finger[i] = (dm_tc_finger){.target=DM_TC_NONE};
+    s->pad_edit = on; s->pad_sel = -1; update(s);
+}
+void dm_tc_set_pad_on(dm_tc_state *s, int on) {
+    on = !!on; if (on == s->pad_on) return;
+    if (!on) dm_tc_set_pad_edit(s, 0);   /* 编辑中被关（关面板）：照完成算，存盘 | turned off while editing (panel closed): counts as done, saved */
+    for (int i = 0; i < DM_TC_MAX_TOUCH; ++i) if (pad_finger(&s->finger[i]) || pad_drag_finger(&s->finger[i])) s->finger[i] = (dm_tc_finger){.target=DM_TC_NONE};
+    s->pad_on = on; update(s);
+}
+
 void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     memset(l, 0, sizeof(*l));
     l->width = isfinite(width) && width > 0 ? width : 0;
@@ -101,6 +168,7 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     l->joy_y = l->height - 115*k;
     l->joy_zone_r = l->width*0.40f; l->joy_zone_t = l->height*0.45f;
     l->joy_min_x = l->joy_radius + 8*k; l->joy_max_y = l->height - l->joy_radius - 8*k;
+    pad_layout(l);
 }
 
 int dm_tc_hit(const dm_tc_layout *l, float x, float y) {
@@ -188,6 +256,8 @@ static void update(dm_tc_state *s) {
             s->buttons |= b;
         }
     }
+    if (!s->pad_edit) for (int i = 0; i < DM_TC_MAX_TOUCH; ++i) { const dm_tc_finger *f = &s->finger[i];   /* 屏幕按键：按住 = 键按住；滑出这颗键 = 松开（aim_cancelled） | On-screen keys: hold = key held; sliding off the key = released (aim_cancelled) */
+        if (pad_finger(f) && !f->aim_cancelled) s->buttons |= f->target == DM_TC_PAD0 + DM_TC_PAD_STICK ? pad_stick_dir(s, f) : s->layout.pad[f->target - DM_TC_PAD0].button; }
     s->buttons |= s->pulse_button;
     /* 第二套技能：ZL 是原版的换组修饰键。只在用技能的那一刻带上——手指按着主钮 / 技能钮、或技能脉冲在发（含等着发）时；
        其余时候不按：一直按着会让十字（+）、腰带、回城都变成「ZL + 键」的组合（Ⅱ 态下十字开不了面板）。
@@ -373,6 +443,7 @@ void dm_tc_init(dm_tc_state *s, float width, float height) {
     s->pointer_release_item = 1;
     dm_tc_layout_make(&s->layout, width, height);
     s->enabled_targets = (1u << DM_TC_COUNT) - 1;
+    s->pad_sel = -1;
     dm_tc_cancel_all(s);
 }
 
@@ -462,6 +533,16 @@ void dm_tc_begin_at(dm_tc_state *s, int slot, float x, float y, double now_s) {
     if (slot < 0 || slot >= DM_TC_MAX_TOUCH || s->finger[slot].active || !isfinite(x) || !isfinite(y)) return;
     s->last_time_s = now_s;
     dm_tc_finger *f = &s->finger[slot];
+    if (s->navigation_mode && s->pad_on) {   /* 屏幕按键先于面板手势：落在键上 = 这根手指归键；编辑中落在键外 = 吞掉（不点界面） | On-screen keys before panel gestures: landing on a key = this finger belongs to the key; while editing, landing off the keys = swallowed (no UI tap) */
+        int p = dm_tc_pad_hit(s, x, y);
+        if (p >= 0) {
+            if (s->pad_edit && p < DM_TC_PADG_N) s->pad_sel = p;   /* 编辑中点键 = 选中它（拖着就挪） | while editing, tapping a key = select it (dragging moves it) */
+            *f = (dm_tc_finger){.active=1, .target=s->pad_edit && p < DM_TC_PADG_N ? DM_TC_PADDRAG0 + p : DM_TC_PAD0 + p, .x=x, .y=y, .aim_origin_x=x, .aim_origin_y=y, .start_time_s=now_s};
+            if (!s->pad_edit && p == DM_TC_PAD_STICK) { s->pad_ox = x; s->pad_oy = y; }
+            if (!s->pad_edit && s->pointer_slot == DM_TC_NONE) s->pointer_valid = 0;   /* 键交给游戏自己的焦点走：宿主不再把光标拉回上一次点按的位置 | the key goes to the game's own focus: the host stops pulling the cursor back to the last tap position */
+            update(s); return; }
+        if (s->pad_edit) { *f = (dm_tc_finger){.active=1, .target=DM_TC_DIFF, .x=x, .y=y}; update(s); return; }
+    }
     if (!s->navigation_mode) {   /* 难度：点第 0 格开 / 收选择条；展开时点某格 = 选档并收起，点别处只收起、照常处理 | Difficulty: tapping cell 0 opens / collapses the selector bar; when expanded, tapping a cell = select that level and collapse; tapping elsewhere only collapses and is then handled as usual */
         const dm_tc_target *d = &s->layout.diff;
         int on_diff = d->r > 0 && hypotf(x-d->x, y-d->y) <= d->r, pick = -1;
@@ -544,6 +625,10 @@ void dm_tc_move_at(dm_tc_state *s, int slot, float x, float y, double now_s) {
     if (slot < 0 || slot >= DM_TC_MAX_TOUCH || !s->finger[slot].active || !isfinite(x) || !isfinite(y)) return;
     s->last_time_s = now_s;
     dm_tc_finger *f = &s->finger[slot];
+    if (pad_drag_finger(f) && s->layout.width > 0 && s->layout.height > 0) {   /* 编辑：拖这一组 | Editing: drag this group */
+        int g = f->target - DM_TC_PADDRAG0; g_pad.dx[g] += (x - f->x) / s->layout.width; g_pad.dy[g] += (y - f->y) / s->layout.height;
+        pad_layout(&s->layout); f->x = x; f->y = y; update(s); return; }
+    if (pad_finger(f) && !f->aim_cancelled && f->target != DM_TC_PAD0 + DM_TC_PAD_STICK && dm_tc_pad_hit(s, x, y) != f->target - DM_TC_PAD0) f->aim_cancelled = 1;   /* A / B：滑出这颗键 = 松开（摇杆随手指走，不算滑出） | A / B: sliding off the key = released (the stick follows the finger and never slides off) */
     f->x = x;
     f->y = y;
     if (pointer_finger(s, f)) {
@@ -566,6 +651,19 @@ void dm_tc_move_at(dm_tc_state *s, int slot, float x, float y, double now_s) {
 void dm_tc_end_at(dm_tc_state *s, int slot, double now_s) {
     if (slot < 0 || slot >= DM_TC_MAX_TOUCH) return;
     s->last_time_s = now_s;
+    if (pad_finger(&s->finger[slot]) || pad_drag_finger(&s->finger[slot])) {   /* 屏幕按键松手：普通键只是松开；编辑中点编辑钮 = 改大小 / 透明度 / 复位 / 完成 | On-screen key release: an ordinary key is just released; while editing, tapping an edit key = change size / opacity / reset / done */
+        const dm_tc_finger d = s->finger[slot]; int p = d.target - DM_TC_PAD0;
+        if (pad_finger(&d) && s->pad_edit && !d.aim_cancelled) {   /* 调整面板：只动选中的那一组 | adjust panel: only the selected group changes */
+            int g = s->pad_sel;
+            if (p == DM_TC_PAD_DONE) { s->finger[slot] = (dm_tc_finger){.target=DM_TC_NONE}; dm_tc_set_pad_edit(s, 0); return; }
+            if (g >= 0 && g < DM_TC_PADG_N) {
+                if (p == DM_TC_PAD_SIZE_DEC) g_pad.scale[g] = fmaxf(DM_TC_PAD_SCALE_MIN, roundf(g_pad.scale[g] * 10 - 1) / 10);
+                else if (p == DM_TC_PAD_SIZE_INC) g_pad.scale[g] = fminf(DM_TC_PAD_SCALE_MAX, roundf(g_pad.scale[g] * 10 + 1) / 10);
+                else if (p == DM_TC_PAD_ALPHA_DEC) g_pad.alpha[g] = fmaxf(DM_TC_PAD_ALPHA_MIN, roundf(g_pad.alpha[g] * 10 - 1) / 10);
+                else if (p == DM_TC_PAD_ALPHA_INC) g_pad.alpha[g] = fminf(1, roundf(g_pad.alpha[g] * 10 + 1) / 10);
+                else if (p == DM_TC_PAD_RESET) { g_pad.dx[g] = g_pad.dy[g] = 0; g_pad.scale[g] = 1; g_pad.alpha[g] = 0.6f; } }
+            pad_layout(&s->layout); }
+        s->finger[slot] = (dm_tc_finger){.target=DM_TC_NONE}; update(s); return; }
     if(s->finger[slot].active && s->finger[slot].target==DM_TC_PORTAL) {
         s->finger[slot]=(dm_tc_finger){.target=DM_TC_NONE};
         for(int i=0;i<DM_TC_MAX_TOUCH;i++)if(s->finger[i].active && s->finger[i].target==DM_TC_PORTAL) {update(s);return;}

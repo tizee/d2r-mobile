@@ -8,6 +8,7 @@
 #include "dm_actions.h"
 #include "dm_cursor_item.h"
 #include "dm_i18n.h"
+#include "dm_widget.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1049,6 +1050,18 @@ static int pg_near(uint64_t root, int x, int y, int vh) {   // 这一点在哪�
             if (((int (*)(uint64_t, uint64_t))fn)(t, (uint64_t)(uint32_t)xx | ((uint64_t)(uint32_t)yy << 32)) & 1) return k ? 1 : -1; } }
     return 0;
 }
+// 讲话文字框 ScrollSpeechPanel（NPC 讲任务 / 物件触发的讲话）开着、触点落在框上（边框 DialogBorder 或文字 ScrollingText）：返回命中的那一块的名字，否则 NULL。
+// 原先点框 = 发一次界面鼠标点击，原版收到点击就跳过文字并关框（ScrollingTextEnd）——玩家想看任务文本，手指一碰就没了。现在点框不做任何事：
+// 文字照常滚完自己关；要提前关用屏幕上的 B 键（面板 / 对话态的屏幕按键）或点框外
+// The speech text box ScrollSpeechPanel (an NPC telling a quest / speech triggered by an object) is open and the touch lands on the box (border DialogBorder or text ScrollingText): returns the name of the part hit, else NULL.
+// Previously a tap on the box = one UI mouse click, and the original game skips the text and closes the box on a click (ScrollingTextEnd) -- a player who wanted to read the quest text lost it at the first touch. Now a tap on the box does nothing:
+// the text scrolls to its end and the box closes by itself; to close it early use the on-screen B key (on-screen keys of the panel / dialog state) or tap outside the box
+static const char *speech_hit(uint64_t root, int x, int y) {
+    uint64_t sp = ui_find(root, "ScrollSpeechPanel", 0); static const char *part[2] = { "DialogBorder", "ScrollingText" };
+    for (int k = 0; sp && *(uint8_t *)(sp + 0x50) && k < 2; k++) { uint64_t c = ui_find(sp, part[k], 0);
+        if (c && *(uint8_t *)(c + 0x50) && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)c + 0x48))(c, (uint64_t)(uint32_t)x | (uint64_t)(uint32_t)y << 32) & 1)) return part[k]; }
+    return NULL;
+}
 static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size_t hn) {   // 1 物品区 / 2 页签 / 0 面板内其它控件 / 3 面板外 / 9 模态框外 | 1 item area / 2 tab / 0 other widget inside the panel / 3 outside the panel / 9 outside a modal
     if (g_cls_out) { g_cls_out = 0; const char *on = "";
         if (modal_top(m, root, &on)) { snprintf(hit, hn, "模态框外 %s", on); g_modal_name = on; return 9; }
@@ -1091,6 +1104,7 @@ static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size
         const char *bn = NULL; int rw = rw_hit(ui_find(root, "PlayerInventoryExpansionLayout", 0), (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32), 1, &bn);
         if (rw && bn) { dm_runeword_button(bn); snprintf(hit, hn, "符文之语清单 %s（宿主处理，不发鼠标点击）", bn); return 6; }
         if (!rw) { dm_runeword_list_close(); snprintf(hit, hn, "符文之语清单外 → 关清单"); return 6; } }
+    { const char *sh = speech_hit(root, x, y); if (sh) { snprintf(hit, hn, "讲话文字框 %s@ScrollSpeechPanel（不点，文字照常滚完；要关按 B）", sh); return 6; } }
     if (swaptab_hit(root, x, y)) { atomic_store(&g_swaptab_tap, 1); snprintf(hit, hn, "技能树 I / II 页签 → 换武器"); return 6; }   // 吃掉这一下，不发鼠标点击 | Swallow this tap, no mouse click sent
     { uint64_t bk = ui_panel(root, "BankExpansionLayout"), tabs = bk && *(uint8_t *)(bk + 0x50) ? ui_find(bk, "BankTabs", 0) : 0;   // 个人页（页签 0）上的左右箭头 = 翻个人仓库页（dm_pages.c）；共享页照旧交给游戏；第六页「编年史」不用这两个原版箭头（被盖板压着，翻页条是它自己的控件，点按在 dm_vault_ui_tap 里收） | The left / right arrows on the personal page (tab 0) = turn personal stash pages (dm_pages.c); shared pages are left to the game as before; the sixth page 「编年史」(Chronicle) does not use these two original arrows (they are under the cover; the page bar is its own widget, and taps are handled in dm_vault_ui_tap)
       if (tabs && TAB_SEL(tabs) == 0) for (int k = 0; k < 2; k++) { uint64_t t = ui_find(bk, k ? "TouchStashRight" : "TouchStashLeft", 0);
@@ -1460,16 +1474,17 @@ static void ui_long_pump(void) {   // 主线程：按游戏自己的悬停对象
     // Long press on the belt in the inventory panel: nothing happens (refill was changed to a double tap on an empty belt cell). Return here first so it does not fall into "long press on empty cell = sort"
     if (belt_widget(dm_wref_get(&g_slot))) { LOG("界面长按：腰带 → 不动（补满改成空格双击）"); return; }
     dm_cursor_item_info ci; int has = finger_item(&ci, "长按");
-    if (!has) {   // 空格上长按 = 整理这一页（原版手柄「按住排序」的同一个终点 dm_inv_sort）。认页：从命中的格子控件沿父链（+0x30）看名字——储藏箱页的箱子格与背包格都叫 grid， | Long press on an empty cell = sort this page (the same endpoint as the original controller's 「按住排序」(Hold to Sort), dm_inv_sort). Identifying the page: from the hit cell widget walk up the parent chain (+0x30) and look at names - the stash cells and inventory cells on the stash page are both called grid,
-        // 只能靠上层名字分：带 stash / bank 的 = 储藏箱，带 cube 的 = 方块，其余 = 背包；商人货架、装备位、腰带不整理
-        // It can only be told apart by the ancestor's name: containing stash / bank = stash, containing cube = cube, the rest = inventory; the vendor shelf, equipment slots and belt are not sorted
-        const char *nm = dm_wref_get(&g_slot) ? (const char *)*(uint64_t *)(dm_wref_get(&g_slot) + 8) : NULL, *pn = g_slot_panel; char chain[160] = ""; int page = -1, grid = nm && (!strcmp(nm, "grid") || !strcmp(nm, "horadriccube_grid") || !strncmp(nm, "advancedstash_", 14) || !strcmp(nm, "basicstash_container"));
-        if (grid && !(pn && !strcmp(pn, "VendorPanelLayout"))) { page = 0;
-            for (uint64_t w = dm_wref_get(&g_slot); w && strlen(chain) < 120; w = *(uint64_t *)(w + 0x30)) { const char *n = *(uint64_t *)(w + 8) ? (const char *)*(uint64_t *)(w + 8) : "?"; strlcat(chain, n, sizeof chain); strlcat(chain, "<", sizeof chain);
-                if (page == 0 && (strcasestr(n, "stash") || strcasestr(n, "bank")) && strcmp(n, "BankExpansionLayout") && strcmp(n, "BankOriginalLayout")) page = 4;
-                if (page == 0 && strcasestr(n, "cube")) page = 3; } }
-        if (page >= 0) { void dm_inv_sort(int); dm_inv_sort(page); }
-        LOG("界面长按：空格（控件链 %s，面板 %s）→ %s", chain[0] ? chain : (nm ? nm : "?"), pn ? pn : "?", page < 0 ? "不动" : page == 0 ? "整理背包" : page == 3 ? "整理方块" : "整理储藏箱");
+    if (!has) {   // 空格上长按 = 整理这一格子控件所在的页（原版手柄「按住排序」同一条路，dm_inv_sort） | Long press on an empty cell = sort the page of this grid widget (same path as the original controller's 「按住排序」(Hold to Sort), dm_inv_sort)
+        // 属主与页照原版 0x3b2e58–0x3b2ea0 从格子控件自己读：+0x5c4 属主单位号、+0x5c8 属主类型、+0x630 页。共享页的属主是各自的仓库单位，不是玩家
+        // （原先一律按玩家整理第 4 页，在共享页上长按整理的其实是个人页）。只认多格格子（虚表 0x2089ab8）；属主类型 1 = NPC（商人货架）不整理
+        // Owner and page are read from the grid widget itself, as the original does at 0x3b2e58–0x3b2ea0: +0x5c4 owner unit id, +0x5c8 owner type, +0x630 page. A shared tab's owner is its own stash unit, not the player
+        // (previously the player's page 4 was always sorted, so a long press on a shared tab actually sorted the personal tab). Only multi-cell grids (vtable 0x2089ab8); owner type 1 = NPC (vendor shelf) is not sorted
+        uint64_t w = dm_wref_get(&g_slot); const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL; uint8_t *b = main_module() ? main_module()->base : NULL;
+        if (!dm_widget_is(b, w, DM_VT_SLOT_B)) { LOG("界面长按：空格（控件 %s，虚表 %#llx，面板 %s）→ 不是多格格子，不动", nm ? nm : "?", w && b ? (unsigned long long)dm_widget_vt(b, w) : 0ull, g_slot_panel ? g_slot_panel : "?"); return; }
+        uint32_t id = *(uint32_t *)(w + 0x5c4), ty = *(uint32_t *)(w + 0x5c8); int page = *(uint8_t *)(w + 0x630);
+        if (ty == 1) { LOG("界面长按：空格（控件 %s）→ 商人货架，不动", nm ? nm : "?"); return; }
+        void dm_inv_sort(uint32_t, uint32_t, int); dm_inv_sort(id, ty, page);
+        LOG("界面长按：空格（控件 %s，面板 %s）→ 整理 属主 %u 类型 %u 页 %d", nm ? nm : "?", g_slot_panel ? g_slot_panel : "?", id, ty, page);
         return; }
     if (ci.container == DM_ITEM_AT_STASH && ci.stack > 0) { void dm_stash_take(int); dm_stash_take(3); LOG("界面长按：高级仓库里的一叠 %s（%d 件）→ 取 3 件到背包", ci.code, ci.stack); return; }   // 原版手柄「按住 = 移动 3 个」，件数不变 | The original controller's "hold = move 3"; the count is unchanged
     if (!strcmp(ci.code, "box") && ci.container == DM_ITEM_AT_INVENTORY && (dm_ui_panel_state() & DM_PS_BANK)) { atomic_store(&g_cube_side_req, 1); LOG("界面长按：储藏箱开着，魔盒（id %u）→ 并排打开", ci.id); return; }   // 与双击同一个入口（魔盒并排） | the same entry as the double-tap (cube side by side)
@@ -1919,31 +1934,18 @@ static void ui_map_center(module_t *m, uint64_t root, int mini) {
 }
 static void ui_map_pump(module_t *m) {
     int cfg = *(volatile int32_t *)(m->base + 0x2d479f4), mini = *(volatile int32_t *)(m->base + 0x2d5c748);
-    // 触屏界面的小地图（右上角地名、点它切全屏、任务终点标记）都建立在微缩档上；原版选项页「透视地图尺寸」是三档循环（全屏 → 微缩地图放左 → 微缩地图放右），
-    // 玩家把它转到「全屏」（0）之后小地图整块没了，点那一块也切不回来（线上：进选项页按了一下右箭头，「小地图消失了」）。
-    // 触屏模式在局里读到 0 就改回缺省「微缩地图放右」（2）并调原版的变更回调重排——想看全屏地图点一下小地图即可。手柄模式是原版界面，三档照原版不动。
     // 测试开关 DM_TEST_AUTOMAP=<帧>:<档>：到帧把配置改成这一档并调回调（当作玩家在选项页选了它）
-    // The touch UI's minimap (area name at the top right, tap it to switch to full screen, quest goal markers) is all built on the minimap
-    // setting; the original game's "automap size" option on the options page cycles through three settings (full screen -> minimap on the
-    // left -> minimap on the right).
-    // Once the player turns it to "full screen" (0), the whole minimap is gone and tapping that area cannot switch it back (in released builds:
-    // entered the options page and pressed the right arrow once, "the minimap disappeared").
-    // In touch mode, reading 0 while in game changes it back to the default "minimap on the right" (2) and calls the original game's change
-    // callback to lay things out again; to see the full-screen map, just tap the minimap. Controller mode uses the original UI, so the
-    // three settings are left as in the original game.
-    // Test switch DM_TEST_AUTOMAP=<frame>:<setting>: at that frame, change the config to this setting and call the callback (as if the
-    // player had picked it on the options page).
+    // Test switch DM_TEST_AUTOMAP=<frame>:<setting>: at that frame, change the config to this setting and call the callback (as if the player had picked it on the options page)
     { static long at = -1; static int tv; uint64_t fr = dm_guest_frame(); if (at < 0) { const char *e = getenv("DM_TEST_AUTOMAP"); at = e ? atol(e) : 0; const char *c = e ? strchr(e, ':') : NULL; tv = c ? atoi(c + 1) : 0; }
       if (at > 0 && fr >= (uint64_t)at) { at = 0; *(volatile int32_t *)(m->base + 0x2d479f4) = tv; ((void (*)(int))(m->base + 0x40f780))(tv); cfg = tv; LOG("测试 DM_TEST_AUTOMAP：帧 %llu 把「透视地图尺寸」改成 %d", (unsigned long long)fr, tv); }
-      int dm_padmode_current(void); dm_hud_info hi; dm_hud_get(&hi);
-      if (cfg == 0 && hi.valid && !dm_padmode_current()) { *(volatile int32_t *)(m->base + 0x2d479f4) = 2; ((void (*)(int))(m->base + 0x40f780))(2); cfg = 2; mini = *(volatile int32_t *)(m->base + 0x2d5c748);
-          LOG("地图：触屏模式读到「透视地图尺寸」是全屏（0）→ 改回微缩地图放右（2），小地图恢复"); } }
-    int r = atomic_exchange(&g_map_req, -1);
-    if (r >= 0) {
-        if (cfg != 1 && cfg != 2) { static int n; if (n++ < 4) LOG("地图切换：玩家的「透视地图尺寸」是 %d（不是微缩档），不切", cfg); }
-        else if ((mini == 0) != r) { ((void (*)(int))(m->base + 0x40f780))(r ? 0 : cfg); mini = *(volatile int32_t *)(m->base + 0x2d5c748); LOG("地图切换：→ %s（配置值 %d 不动，不落盘）", r ? "全屏" : cfg == 1 ? "微缩放左" : "微缩放右", cfg); }
     }
-    atomic_store(&g_map_full_now, mini == 0 && (cfg == 1 || cfg == 2));   // 只把「我们切出来的全屏」算全屏；玩家自己选全屏档的不算 | Only "the fullscreen we switched to" counts as fullscreen; the fullscreen mode chosen by the player does not
+    // 玩家在选项页选「全屏」（0）= 每进一局默认就是全屏地图（游戏自己按配置这样摆，配置照常落盘）。原先触屏模式读到 0 就改回 2：选项页里永远选不上全屏。
+    // 现在不改配置：全屏照样算「全屏开着」（g_map_full_now），点空处 / 点那一块切回微缩地图（回调传 2 = 放右，只在运行时，配置仍是 0），再点小地图又回全屏
+    // Choosing "Fullscreen" (0) on the options page = every run starts with the fullscreen map (the game lays it out that way from the config, which is saved as usual). Previously touch mode changed 0 back to 2 on sight, so fullscreen could never be chosen on the options page.
+    // Now the config is left alone: fullscreen counts as "fullscreen open" (g_map_full_now) as well; tapping empty space / that block switches back to the minimap (callback with 2 = right, runtime only, the config stays 0), and tapping the minimap again goes back to fullscreen
+    int r = atomic_exchange(&g_map_req, -1), back = cfg == 1 ? 1 : 2;
+    if (r >= 0 && (mini == 0) != r) { ((void (*)(int))(m->base + 0x40f780))(r ? 0 : back); mini = *(volatile int32_t *)(m->base + 0x2d5c748); LOG("地图切换：→ %s（配置值 %d 不动，不落盘）", r ? "全屏" : back == 1 ? "微缩放左" : "微缩放右", cfg); }
+    atomic_store(&g_map_full_now, mini == 0);
 }
 // ---------- 右上角小地图的位置：触摸层把它当点击区（点一下 = 地图开关键），矩形取游戏自己的 AutoMap 面板，不写死 ----------
 // AutoMap 控件（虚表 main+0x20c58a0）：+0x70 / +0x74 = x / y、+0x78 / +0x7c = 宽 / 高（布局单位，2160 = 画面高；微缩地图放右时 x = −宽，即贴着画面右边），+0x80 缩放。
@@ -2164,11 +2166,7 @@ static void ui_wtap_pump(module_t *m, uint64_t root, int width, int height) {   
     // 点在框上（边框 DialogBorder 或文字 ScrollingText）= 照面板态点它的同一条路送一次界面鼠标点击——原版自己收到点击后发 ScrollingTextEnd 关框（NPC 开场白那种场合一直是这么关的）。框外的点照常交给世界
     // The speech text box ScrollSpeechPanel open on its own (speech triggered by an object / quest, e.g. the Ancients' altar: no NpcDialogPanel, the front end does not enter the panel state, a finger tap on it used to fall through to the world, and the text had to scroll by itself for over half a minute):
     // a tap on the box (the border DialogBorder or the text ScrollingText) = send one UI mouse click through the same path used for tapping it in the panel state - the original game, on receiving the click, sends ScrollingTextEnd itself and closes the box (this is how it has always been closed for NPC opening lines). Taps outside the box go to the world as usual
-    { uint64_t sp = ui_find(root, "ScrollSpeechPanel", 0); static const char *part[2] = { "DialogBorder", "ScrollingText" };
-      for (int k = 0; sp && *(uint8_t *)(sp + 0x50) && k < 2; k++) { uint64_t c = ui_find(sp, part[k], 0);
-          if (c && *(uint8_t *)(c + 0x50) && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)c + 0x48))(c, (uint64_t)(uint32_t)x | (uint64_t)(uint32_t)y << 32) & 1)) {
-              float ux = (v >> 45 & 0x7fff) / 32767.0f, uy = (v >> 30 & 0x7fff) / 32767.0f; dm_ui_touch(0, ux, uy); dm_ui_touch(2, ux, uy);
-              LOG("界面命中：(%d,%d) → 讲话文字框 %s@ScrollSpeechPanel（单独开着），送界面点击关它", x, y, part[k]); return; } } }
+    { const char *sh = speech_hit(root, x, y); if (sh) { LOG("界面命中：(%d,%d) → 讲话文字框 %s@ScrollSpeechPanel（单独开着），不点（文字照常滚完；要关按 B）", x, y, sh); return; } }
     unsigned dm_world_tap(float, float); dm_world_tap((v >> 15 & 0x7fff) / 32767.0f, (v & 0x7fff) / 32767.0f);
 }
 // 开佣兵页：按 + 开功能页，再按 R 翻到佣兵页签（开关位 main+0x2d5ff66 = 1 为到位）。每一下按完看反馈再按下一下，同技能绑定「开技能树」那段

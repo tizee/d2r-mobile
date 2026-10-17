@@ -210,6 +210,57 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         }
     }
 }
+// 面板 / 对话态的屏幕按键（dm_touch_controls.h DM_TC_PAD_*）：摇杆画法同战斗摇杆（古铜底圈 + 摇杆头图，头跟手指、限在底盘内）；
+// A / B 同技能钮的深色圆底 + 古铜圆环，上写键名、下写「确认 / 取消」。不透明度取各组设置，按住时变实。
+// 编辑中：三颗键加金圈（选中的那颗更粗）；屏幕顶部一块调整面板（大小、透明度两行「− 值 +」，复位、完成），没选中键时只显示提示与「完成」。
+// 面板只认 pad_sel 那一组，与键的种类无关：以后别的屏幕控件登记成组就能复用
+// On-screen keys of panel / dialog state (dm_touch_controls.h DM_TC_PAD_*): the stick is drawn like the combat stick (bronze base ring + stick head image, the head follows the finger, limited to the base);
+// A / B use the skill buttons' dark round base + bronze ring, with the key name on top and "confirm / cancel" below. Opacity comes from each group's settings and becomes solid while held.
+// While editing: a gold ring on the three keys (thicker on the selected one); an adjust panel at the top of the screen (two "− value +" rows for size and opacity, reset, done); with no key selected only a hint and "done" are shown.
+// The panel only works on the pad_sel group, independent of the key type: other on-screen controls can reuse it later by registering as groups
+static void pad_round(CGContextRef c, CGRect b, CGFloat a, BOOL held) {
+    CGFloat lw=MAX(1.5,b.size.width*.0375);
+    CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.086 green:.067 blue:.047 alpha:(held?.92:.78)*a].CGColor); CGContextFillEllipseInRect(c,b);
+    CGContextSetLineWidth(c,lw); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.60 green:.47 blue:.28 alpha:a].CGColor); CGContextStrokeEllipseInRect(c,CGRectInset(b,lw/2,lw/2));
+}
+- (void)drawPad:(CGContextRef)c state:(const dm_tc_state *)s {
+    if (!s->navigation_mode || !s->pad_on) return;
+    dm_tc_pad_cfg cfg; dm_tc_get_pad_cfg(&cfg); BOOL edit=s->pad_edit!=0; const dm_tc_layout *l=&s->layout;
+    for (int g=0; g<DM_TC_PADG_N; g++) {
+        const dm_tc_target *t=&l->pad[g]; if (t->r<=0) continue;
+        const dm_tc_finger *hf=NULL; for(int f=0;f<DM_TC_MAX_TOUCH;f++) if(s->finger[f].active && !s->finger[f].aim_cancelled && s->finger[f].target==DM_TC_PAD0+g) hf=&s->finger[f];
+        BOOL held=hf!=NULL && !edit; CGFloat a=edit ? .9 : held ? 1 : cfg.alpha[g];
+        CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2);
+        if (g==DM_TC_PAD_STICK) {   // 同战斗摇杆：底圈 + 摇杆头（头跟手指，限在底盘里） | like the combat stick: base ring + head (follows the finger, limited to the base)
+            [self drawJoystickPart:b base:YES active:held];   // 与战斗摇杆同一套底圈 / 摇杆头画法 | same base / thumb drawing as the combat stick
+            CGFloat dx=0,dy=0; if(held) { dx=hf->x-s->pad_ox; dy=hf->y-s->pad_oy; CGFloat d=hypot(dx,dy); if(d>t->r) { dx*=t->r/d; dy*=t->r/d; } }
+            CGFloat hr=t->r*23/60; [self drawJoystickPart:CGRectMake(t->x+dx-hr,t->y+dy-hr,hr*2,hr*2) base:NO active:held];
+        } else {
+            pad_round(c,b,a,held);
+            CGFloat ts=t->r*.8; caption(g==DM_TC_PAD_A?@"A":@"B",CGRectMake(b.origin.x,t->y-ts*.85,b.size.width,ts*1.4),ts,held?1:MIN(1,a+.3));
+            CGFloat cs=t->r*.36; caption(@(dm_ui(g==DM_TC_PAD_A?"dmPadOk":"dmPadCancel")),CGRectMake(b.origin.x,t->y+t->r*.22,b.size.width,cs*1.5),cs,held?1:MIN(1,a+.3));
+        }
+        if (edit) { CGFloat lw=s->pad_sel==g?3:1.5; CGContextSetLineWidth(c,lw); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.95 green:.78 blue:.30 alpha:s->pad_sel==g?1:.6].CGColor); CGContextStrokeEllipseInRect(c,CGRectInset(b,-4,-4)); }
+    }
+    if (!edit) return;
+    // 调整面板 | adjust panel
+    const dm_tc_target *d0=&l->pad[DM_TC_PAD_SIZE_DEC], *i0=&l->pad[DM_TC_PAD_SIZE_INC], *dn=&l->pad[DM_TC_PAD_DONE];
+    CGFloat pad=d0->r*1.4, x0=d0->x-d0->r-pad*3.2, x1=i0->x+i0->r+pad, y0=d0->y-d0->r-pad*.6, y1=dn->y+dn->r+pad*.6, ts=d0->r*.62;
+    UIBezierPath *bg=[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x0,y0,x1-x0,y1-y0) cornerRadius:8];
+    CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.05 green:.04 blue:.03 alpha:.9].CGColor); CGContextAddPath(c,bg.CGPath); CGContextFillPath(c);
+    CGContextSetLineWidth(c,1.5); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.60 green:.47 blue:.28 alpha:1].CGColor); CGContextAddPath(c,bg.CGPath); CGContextStrokePath(c);
+    int g=s->pad_sel;
+    if (g<0) { caption(@(dm_ui("dmPadPick")),CGRectMake(x0,d0->y-ts,x1-x0,ts*2),ts,1); }
+    else {
+        static const int btns[4]={DM_TC_PAD_SIZE_DEC,DM_TC_PAD_SIZE_INC,DM_TC_PAD_ALPHA_DEC,DM_TC_PAD_ALPHA_INC};
+        for (int k=0;k<4;k++) { const dm_tc_target *t=&l->pad[btns[k]]; CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2); pad_round(c,b,1,NO); caption(k%2?@"+":@"-",CGRectMake(b.origin.x,t->y-t->r*.6,b.size.width,t->r*1.2),t->r,1); }
+        for (int k=0;k<2;k++) { const dm_tc_target *t=&l->pad[btns[k*2]]; CGFloat cx=(t->x+l->pad[btns[k*2+1]].x)/2;
+            caption(@(dm_ui(k?"dmPadAlpha":"dmPadSize")),CGRectMake(x0+4,t->y-ts*.8,t->x-t->r-x0-8,ts*1.6),ts*.9,.85);
+            caption([NSString stringWithFormat:@"%.0f%%",(k?cfg.alpha[g]:cfg.scale[g])*100],CGRectMake(cx-60,t->y-ts*.8,120,ts*1.6),ts,1); }
+        const dm_tc_target *t=&l->pad[DM_TC_PAD_RESET]; CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2); pad_round(c,b,1,NO); caption(@"↺",CGRectMake(b.origin.x,t->y-t->r*.6,b.size.width,t->r*1.2),t->r,1);
+    }
+    { CGRect b=CGRectMake(dn->x-dn->r,dn->y-dn->r,dn->r*2,dn->r*2); pad_round(c,b,1,NO); caption(@"✓",CGRectMake(b.origin.x,dn->y-dn->r*.6,b.size.width,dn->r*1.2),dn->r,1); }
+}
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     const dm_tc_state *s = self.controls; if (!s) return;
@@ -300,6 +351,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     [self drawV4:c];   // 底栏：它自己按面板栈 / 死亡判显隐（dm_hud_bar_visible）。原先放在摇杆之后，被下面「面板开着就不画摇杆」的提前返回一起跳过—— | Bottom bar: it decides its own visibility from the panel stack / death (dm_hud_bar_visible). It used to come after the joystick and was skipped along with the early return below for "don't draw the joystick while a panel is open" —
                        // 只开着 NPC 对话菜单 / 说话框时（设计上底栏照常显示）UIKit 底栏不画，露出游戏层那份：没有数值和经验条、难度格空、十字位写着「功能」
                        // When only the NPC dialog menu / speech box is open (by design the bottom bar stays visible), the UIKit bottom bar is not drawn and the game-layer copy shows through: no values or experience bar, the difficulty cell empty, and "功能" (Functions) written in the cross slot
+    [self drawPad:c state:s];
     if (self.hud.valid && self.hud.dead) return;   // 死亡画面：右侧圆钮已由掩码收起，左侧摇杆圈也不画（截图：死后摇杆圈还在） | death screen: the round buttons on the right are already hidden by the mask, and the stick ring on the left is not drawn either (screenshot: the stick ring was still there after death)
     if (s->navigation_mode) return;   // 面板开着（与起摇杆同一个判定：dm_touch_controls.c 起摇杆的条件带 !navigation_mode）：摇杆起不来，静止淡影只会压在面板上（iPad 上双面板占满整宽）——不画 | a panel is open (the same check as starting the stick: the stick-start condition in dm_touch_controls.c includes !navigation_mode): the stick cannot start, and the idle faint shadow would only sit on top of the panel (on iPad the dual panels fill the whole width) - not drawn
     BOOL moving = s->joy_slot >= 0;

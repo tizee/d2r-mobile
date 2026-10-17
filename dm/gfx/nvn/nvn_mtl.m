@@ -2165,7 +2165,7 @@ static int scissor_full(const tex_t *t, const view_t *v, int has_v) {
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 // ---------- 着色器映射表：Switch 控制段哈希 → PC metallib（dm/gfx/tools/shader_map.py 产出） ----------
 // ---------- Shader mapping table: Switch control section hash → PC metallib (produced by dm/gfx/tools/shader_map.py) ----------
-static NSMutableDictionary<NSString *, NSArray *> *g_shmap;
+static NSMutableDictionary<NSString *, NSString *> *g_shmap;   // 值 = 阶段名（shader_map.tsv 第 3 列），不是数组 | values are stage names (column 3 of shader_map.tsv), not arrays
 static NSString *g_shmap_path, *g_msl_dir;
 static NSString *exe_rel(const char *rel) {
     char buf[4096]; uint32_t n = sizeof buf;
@@ -5370,14 +5370,14 @@ void mtl_host_apply(uint64_t v) { int frz = (int)(uint32_t)v - 1, force = (int)(
 // ---------- 省电模式（30 帧）----------
 // 开：显示节拍对象改 30 Hz（帧率范围 30–30，ProMotion 屏跟着降刷新率；front_ios.m 的帧率提示一起降），游戏每拍出一帧；运行时外推关（每帧真画）。
 // 游戏逻辑本来就按 25 拍 / 秒走、单位位置按时间插值，30 帧下没有重复帧（真机实测：每帧镜头位移的变异系数 30 帧 0.292、60 帧 0.296）。
-// 开关在「自定义」页（dm_custom.c eco_fps，缺省关，应用即生效）；测试开关 DM_FPS=30/60 钉住。
+// 开关在「自定义」页「最高帧率」（dm_custom.c fps_max：30 / 40 / 60，缺省 60，应用即生效）；测试开关 DM_FPS=30/40/60 钉住。
 // ---------- Power-saving mode (30 frames) ----------
 // On: the display link object changes to 30 Hz (frame rate range 30–30, a ProMotion screen lowers its refresh rate accordingly; the frame rate hint in front_ios.m is lowered together), the game presents one frame per display-link tick; runtime extrapolation off (really draws every frame).
 // Game logic already runs at 25 ticks / second and unit positions are interpolated by time, so there are no repeated frames at 30 frames (measured on a real device: coefficient of variation of per-frame camera displacement 0.292 at 30 frames, 0.296 at 60 frames).
-// The switch is on the 「自定义」(Custom) page (dm_custom.c eco_fps, off by default, takes effect on apply); the test switch DM_FPS=30/60 pins it.
+// The setting is "Max frame rate" on the Custom page (dm_custom.c fps_max: 30 / 40 / 60, default 60, takes effect on apply); the test switch DM_FPS=30/40/60 pins it.
 __attribute__((weak)) int dm_fps_setting(void) { return 60; }   // 宿主 dm_custom.c 提供强定义；图形单测不链宿主时恒 60 | The host's dm_custom.c provides the strong definition; always 60 when graphics unit tests do not link the host
-int mtl_fps_target(void) { static int env = -2; if (env == -2) { const char *e = getenv("DM_FPS"); env = e ? atoi(e) : -1; if (env != 30 && env != 60) env = -1; else MLOG("DM_FPS=%d：帧数由测试开关钉住", env); }
-    return env > 0 ? env : dm_fps_setting() == 30 ? 30 : 60; }
+int mtl_fps_target(void) { static int env = -2; if (env == -2) { const char *e = getenv("DM_FPS"); env = e ? atoi(e) : -1; if (env != 30 && env != 40 && env != 60) env = -1; else MLOG("DM_FPS=%d：帧数由测试开关钉住", env); }
+    int f = env > 0 ? env : dm_fps_setting(); return f == 30 || f == 40 ? f : 60; }   // 最高帧率：30 / 40 / 60（自定义页 fps_max）；40 = ProMotion 120 Hz 的三分之一 | max frame rate: 30 / 40 / 60 (Custom page fps_max); 40 = a third of ProMotion 120 Hz
 // 外推启用状态一变（省电模式切换、世界冻结接手 / 交回）：先让「跨帧不写回」账本重学（试用期里照常写回），外推晚一帧再真正切换——
 // 保证切换前最后一次提交是全量写回的。不然 30 帧时每帧先清空的附件被学成不写回，切回 60 帧的第一个外推帧读到旧内容、闪一帧（测试版实测，xv 自检报红后才撤销）
 // Whenever the extrapolation enabled state changes (power-saving mode toggled, world freeze takes over / hands back): first let the "no store across frames" ledger relearn (during the trial period it stores as usual), and the extrapolation really switches one frame later --
@@ -5936,7 +5936,7 @@ int mtl_display_hz(void) { return (int)(mtl_display_refresh() + 0.5); }
 // 原先固定 60：144 Hz 屏上 60 不整除，系统只能 2 拍 / 3 拍交替（13.9 / 20.8 ms），看着一顿一顿。算式见 nvn_pace.h nvn_pace_hz
 // Previously fixed at 60: 60 does not evenly divide a 144 Hz screen, so the system can only alternate 2 / 3 refreshes (13.9 / 20.8 ms), which looks stuttery. Formula in nvn_pace.h nvn_pace_hz
 double dm_pace_hz(double screen_hz, double floor_hz) { return nvn_pace_hz(screen_hz, floor_hz); }
-double mtl_pace_hz(void) { return dm_pace_hz(mtl_display_refresh(), mtl_fps_target() == 30 ? 30 : 60); }
+double mtl_pace_hz(void) { return dm_pace_hz(mtl_display_refresh(), mtl_fps_target()); }
 static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次出图前额外停顿（模拟 drawable 迟迟不可用） | For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 #if !DM_NVN_M3
 static CAMetalLayer *g_present_layer_resident;
@@ -6350,7 +6350,7 @@ static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象
         MLOG("显示节拍：抢救期满，换回节拍模式 %d 再试（帧 %llu）", g_dm_present_link, (unsigned long long)atomic_load(&g_cur_frame)); }
     int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
-    if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz（按屏幕刷新率取整除档） | Power saving mode: display pacing 30 Hz (evenly dividing tier by screen refresh rate)
+    if (want && mtl_fps_target() < 60) want = 3;   // 省电模式：显示节拍 30 Hz（按屏幕刷新率取整除档） | Power saving mode: display pacing 30 Hz (evenly dividing tier by screen refresh rate)
     if (want == applied && want && want != 2 && g_link) {   // 窗口换了屏 / 屏幕改了刷新率：节拍跟着换到新的整除档 | Window moved to another screen / screen refresh rate changed: pacing switches to the new evenly dividing tier
         double hz = mtl_pace_hz();
         if (hz != applied_hz) { CAMetalDisplayLink *link = g_link; link.preferredFrameRateRange = link_range(want);

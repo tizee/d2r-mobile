@@ -1175,7 +1175,9 @@ def _drop_rows(*rows):
 # (console version VideoOptionsPanelHD.json; the touch version has already removed the video tab): the fourth item of the tab strip (originally 「控制」(Controls) = KeyBindingMenu, which does not appear on this platform) is renamed 「自定义」(Custom) and opens VideoOptionsPanel;
 # the video page's table is replaced entirely with our rows: section header + one original-game checkbox per switch (following the fields of the 「自动拾取金币」(Auto Gold Pickup) row on the 「游戏」(Game) page). Widget names are TouchCustom_<key>,
 # and the host dm_custom.c reads whether each is checked and handles apply / discard / default. The checkbox message sends a harmless ClosePanel (same as 「极乐世界」(Elysium)), which the game does not recognize
-_CUSTOM_KEYS = ('auto_mana', 'merc_pot', 'drop_light', 'map_mark', 'item_notes', 'icloud', 'pot_pick', 'drop_haptic', 'gem_pick', 'store_btn', 'eco_fps', 'q3d', 'loot_filter', 'auto_buff', 'touch_swap_above')
+_CUSTOM_KEYS = ('gfx_q', 'fps_max', 'auto_mana', 'merc_pot', 'drop_light', 'map_mark', 'item_notes', 'icloud', 'pot_pick', 'drop_haptic', 'gem_pick', 'store_btn', 'loot_filter', 'auto_buff', 'nav_pad', 'touch_swap_above', '!padedit',
+                'dq_unique', 'dq_set', 'dq_rare', 'dq_magic', '#dev', 'perf_hud', 'perf_log')   # 与宿主 dm_custom.c 的 k_tab 同序（'#…' 是分节标题行，宿主不认） | same order as k_tab in the host's dm_custom.c ('#...' is a section header row, unknown to the host)
+_CUSTOM_SEL = ('gfx_q', 'fps_max', 'touch_swap_above', 'dq_unique', 'dq_set', 'dq_rare', 'dq_magic')   # 左右选择行（宿主 k_tab 里 n > 1 的键） | left/right selector rows (keys with n > 1 in the host k_tab)
 # 字在中英表（dm/i18n/ui_text.tsv 的 dmCustom<键名驼峰>），布局写 @键、跟原版语言走（英文版）；行高按中文行数分，英文必须同样行数（不然换语言排版变）
 # The text lives in the Chinese-English string table (dmCustom<key name in camel case> in dm/i18n/ui_text.tsv); layouts write @key and follow the
 # original game's language (English version); row height is assigned by the number of Chinese lines, and English must have the same number of lines
@@ -1186,7 +1188,7 @@ def _custom_label(key):
     t = {k: (zh, en) for k, zh, en in dm_i18n.rows()}[_custom_key(key)]
     if t[0].count('\n') != t[1].count('\n'): raise SystemExit('touch_layout：自定义页 %s 的中英行数不同：%r / %r' % (key, t[0], t[1]))
     return t[0]
-_CUSTOM_ROWS = tuple((k, '@' + _custom_key(k)) for k in _CUSTOM_KEYS)
+_CUSTOM_ROWS = tuple((k, '@' + _custom_key(k.lstrip('#!'))) for k in _CUSTOM_KEYS)
 # 视频页的类会把它不认识的表格行整行隐藏（控件树：我们的行 +0x50 = 0，只剩没有勾选框的标题行可见），所以各行不进表格；
 # 但它不动滚动区里别的控件——各行包在一个容器 TouchCustomRows 里、挂在原版滚动区 ScrollView 下，内容多高原版就滚多高、滚出列表框的由原版裁掉
 # （和别的选项页同一套滚动：拖动、滚动条、滚轮）。原先各行直接钉在面板上、不在滚动区里，列表框只有 1260 高，11 行把行高压到了 98。
@@ -1200,10 +1202,7 @@ _CUSTOM_ROWS = tuple((k, '@' + _custom_key(k)) for k in _CUSTOM_KEYS)
 _CUSTOM_TITLE_H, _CUSTOM_LINE_H = 180, 180
 _CUSTOM_ALL = (('lang_en', '@dmCustomLang'),) + _CUSTOM_ROWS
 _CUSTOM_TEST_ROWS = int(os.environ.get('DM_CUSTOM_TEST_ROWS', '0'))   # 测试（造现场）：末尾多摆这么多行假行，验更多行时的滚动；产品不设 | test (test setup): append this many dummy rows at the end, to verify scrolling with more rows; not set in the product
-# 「3D 画质」（q3d）是单选的两项、每项下面一行说明小字，占两行高（_CUSTOM_Q3D_H）；其余各行一行高
-# "3D Quality" (q3d) is a radio with two options, each with a line of small description text below, taking two rows of height (_CUSTOM_Q3D_H); every other row is one row high
-_CUSTOM_Q3D_H = 2 * _CUSTOM_LINE_H
-_CUSTOM_ROW_H = [(_CUSTOM_Q3D_H if k in ('q3d', 'touch_swap_above') else _CUSTOM_LINE_H) for k, _ in _CUSTOM_ALL] + [_CUSTOM_LINE_H] * _CUSTOM_TEST_ROWS
+_CUSTOM_ROW_H = [_CUSTOM_LINE_H for k, _ in _CUSTOM_ALL] + [_CUSTOM_LINE_H] * _CUSTOM_TEST_ROWS
 _CUSTOM_Y = [_CUSTOM_TITLE_H + sum(_CUSTOM_ROW_H[:i]) for i in range(len(_CUSTOM_ROW_H))]
 _CUSTOM_H = _CUSTOM_TITLE_H + sum(_CUSTOM_ROW_H)
 def _custom_toggle_row(i, key, label):
@@ -1242,30 +1241,30 @@ def _custom_lang_row():
     return (text('TouchCustom_lang_en_Text', 0, 700, 'dmCustomLang')
             + text('TouchCustomLangZh_Text', _LANG_ZH_X[0], _LANG_ZH_X[1] - _LANG_ZH_X[0] - 10, 'dmCustomLangZh') + box('TouchCustom_lang_zh', _LANG_ZH_X[1])
             + text('TouchCustomLangEn_Text', _LANG_EN_X[0], _LANG_EN_X[1] - _LANG_EN_X[0] - 10, 'dmCustomLangEnOpt') + box('TouchCustom_lang_en', _LANG_EN_X[1]))
-# 「3D 画质」（流畅优先（缺省，掉帧自动降 3D 比例）/ 画质优先（不自动降））：上下两项单选，每项标题下一行说明小字。
-# 存的是一个键 q3d（1 = 画质优先）：「画质优先」的勾选框叫 TouchCustom_q3d、「流畅优先」的叫 TouchCustom_q3d_smooth（它的反面），宿主 dm_custom.c 让两框互斥（同语言行）。
-# TouchCustom_q3d_Text 是空字、高度盖住两项的框：手柄选中框按「文字框与勾选框的上下沿取并」框住整行（dm_custom.c），所以用它把两项一起框进去
-# "3D Quality" (Smoothness first (default, automatically lowers the 3D scale on frame drops) / Quality first (no automatic lowering)): a stacked two-option radio, each option with a line of small description text below its title.
-# It stores a single key q3d (1 = quality first): the "Quality first" checkbox is TouchCustom_q3d and the "Smoothness first" one is TouchCustom_q3d_smooth (its inverse); the host's dm_custom.c makes the two boxes mutually exclusive (like the language row).
-# TouchCustom_q3d_Text is an empty-text box tall enough to cover both options: the controller selection frame wraps the whole row by "the union of the top/bottom edges of the text box and the checkbox" (dm_custom.c), so it is used to frame both options together
-def _custom_q3d_row(i, setting="q3d"):
-    prefix = "TouchCustom_" + setting
-    y = _CUSTOM_Y[i]; h = _CUSTOM_LINE_H
-    def text(name, yy, hh, key, small): return ('        { "type": "TextBoxWidget", "name": "%s", "fields": { "rect": { "x": 0, "y": %d, "width": 1200, "height": %d }, "text": "@%s", "style": %s } },\n'
-                                                % (name, yy, hh, key, '{ "fontColor": "$FontColorGray", "pointSize": 30, "alignment": { "h": "left", "v": "center" } }' if small else '"$StyleSettingsText"'))
-    def box(name, yy): return ('        { "type": "ToggleButtonWidget", "name": "%s", "fields": {\n'
-            '            "rect": { "x": 1315, "y": %d, "width": 70, "height": 70 }, "sound": "cursor_menu_select_hd",\n'
-            '            "focusIndicatorPadding": "$OptionsToggleFocusIndicatorPadding", "focusIndicatorFilename": "$OptionsToggleFocusIndicatorFilename", "focusIndicatorOffset": { "x": 0, "y": -4 },\n'
-            '            "filename": "Lobby\\\\CreateGame\\\\CreateGame_AdvancedCheckbox",\n'
-            '            "untoggledFrame": 0, "untoggledPressedFrame": 1, "untoggledHoveredFrame": 3, "untoggledDisabledFrame": 2,\n'
-            '            "toggledFrame": 4, "toggledPressedFrame": 5, "toggledHoveredFrame": 6,\n'
-            '            "onClickMessage": "PanelManager:ClosePanel:%s" } },\n') % (name, yy, name)
-    out = '        { "type": "TextBoxWidget", "name": "%s_Text", "fields": { "rect": { "x": 0, "y": %d, "width": 1000, "height": %d }, "text": "" } },\n' % (prefix, y, _CUSTOM_Q3D_H)
-    choices = (('dmCustomQ3dSmooth', prefix + '_smooth'), ('dmCustomQ3dQuality', prefix)) if setting == 'q3d' else (('dmCustomTouchSwapNear', prefix + '_near'), ('dmCustomTouchSwapFar', prefix))
-    for k, (key, nm) in enumerate(choices):
-        yy = y + k * h
-        out += text(nm + '_Label', yy + 10, 100, key, False) + text(nm + '_Hint', yy + 100, 70, key + 'Hint', True) + box(nm, yy + 15)
-    return out
+# 左右选择行（_CUSTOM_SEL，宿主 dm_custom.c）：标签 + 「◀ 值 ▶」。箭头照搬键鼠版仓库页翻页那两颗（同图同帧号），点击发空操作消息 ClosePanel:TouchCustom_<键>_L / TouchCustom_<键>
+# 给宿主；右箭头就叫 TouchCustom_<键>（占勾选框那一列：手柄选中框按「文字框 + 这一颗」框整行），值写在中间的文字控件 TouchCustom_<键>_Val
+# Left/right selector rows (_CUSTOM_SEL, host dm_custom.c): label + "◀ value ▶". The arrows copy the two paging arrows of the keyboard-and-mouse stash page (same images, same frames); a tap sends the no-op message ClosePanel:TouchCustom_<key>_L / TouchCustom_<key>
+# to the host; the right arrow is named TouchCustom_<key> (it sits in the checkbox column: the controller selection frame wraps the row as "text box + this key"), and the value goes into the middle text widget TouchCustom_<key>_Val
+def _custom_sel_row(i, key, label):
+    y, h = _CUSTOM_Y[i], _CUSTOM_LINE_H; ay = y + (h - 90) // 2   # 箭头原图 22×30 像素 = 44×60 单位，放大 1.5 倍到 66×90（手指点得到，与勾选框同高一档） | the arrow image is 22x30 px = 44x60 units, scaled 1.5x to 66x90 (tappable, about the checkbox height)
+    def arrow(name, x, side): return ('        { "type": "ButtonWidget", "name": "%s", "fields": { "rect": { "x": %d, "y": %d, "scale": 1.5 }, "filename": "Lobby/Final/LobbyArrowSmall%s", '
+                                      '"normalFrame": 0, "hoveredFrame": 1, "pressedFrame": 2, "disabledFrame": 3, "sound": "cursor_menu_select_hd", "onClickMessage": "PanelManager:ClosePanel:%s" } },\n' % (name, x, ay, side, name))
+    return ('        { "type": "TextBoxWidget", "name": "TouchCustom_%s_Text", "fields": { "rect": { "x": 0, "y": %d, "width": 860, "height": %d }, "text": "%s", "style": "$StyleSettingsText", "style/options/newlineHandling": "standard" } },\n' % (key, y, h, label)
+            + arrow('TouchCustom_%s_L' % key, 900, 'L')
+            + '        { "type": "TextBoxWidget", "name": "TouchCustom_%s_Val", "fields": { "rect": { "x": 970, "y": %d, "width": 320, "height": %d }, "text": "", "style": "$StyleSettingsCarousel", "style/fontColor": "$CarouselEnabledColor" } },\n' % (key, y, h)
+            + arrow('TouchCustom_%s' % key, 1300, 'R'))
+# 动作行（'!键'）：标签 + 一颗原版前端小按钮（同原版选项页「游戏」那页的按钮），点击发 ClosePanel:TouchCustom_<键> 给宿主；宿主不存值，手柄选行时跳过
+# Action row ('!key'): label + one original front-end small button (as on the original options page "Gameplay"); a tap sends ClosePanel:TouchCustom_<key> to the host; the host stores no value, and the controller skips it when selecting rows
+def _custom_action_row(i, key, label):
+    y, h = _CUSTOM_Y[i], _CUSTOM_LINE_H
+    return ('        { "type": "TextBoxWidget", "name": "TouchCustom_%s_Text", "fields": { "rect": { "x": 0, "y": %d, "width": 1000, "height": %d }, "text": "%s", "style": "$StyleSettingsText", "style/options/newlineHandling": "standard" } },\n' % (key, y, h, label)
+            + '        { "type": "ButtonWidget", "name": "TouchCustom_%s", "fields": { "rect": { "x": 1080, "y": %d }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "pressedFrame": 1, "disabledFrame": 2, "hoveredFrame": 3, '
+              '"textString": "@%sBtn", "pointSize": "$MediumFontSize", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "sound": "cursor_menu_select_hd", "onClickMessage": "PanelManager:ClosePanel:TouchCustom_%s" } },\n' % (key, y + (h - 72) // 2, _custom_key(key), key))
+# 分节标题行（'#键'）：只有一行字，样式同页顶标题（$StyleSettingsTitle），下面一道原版分隔线；宿主不认这一行，手柄选行时跳过 | Section header row ('#key'): one line of text styled like the page title ($StyleSettingsTitle), with the original divider below; the host does not know this row and the controller skips it
+def _custom_header_row(i, key, label):
+    y, h = _CUSTOM_Y[i], _CUSTOM_LINE_H
+    return ('        { "type": "TextBoxWidget", "name": "TouchCustomHdr_%s", "fields": { "rect": { "x": 0, "y": %d, "width": 1400, "height": %d }, "text": "%s", "style": "$StyleSettingsTitle" } },\n' % (key, y, h, label)
+            + '        { "type": "ImageWidget", "name": "TouchCustomHdr_%s_Div", "fields": { "rect": { "x": 0, "y": %d }, "filename": "PauseMenu\\\\Divider" } },\n' % (key, y + h - 20))
 def _custom_page(text):
     if '"name": "VideoOptionsPanel"' not in text or '"name": "OptionsTable"' not in text: raise SystemExit('touch_layout：主机版视频页不是原样（原版布局变了？），自定义页没换')
     title = ('{ "type": "TableRowWidget", "name": "Row TouchCustomTitle", "children": [\n'
@@ -1279,7 +1278,7 @@ def _custom_page(text):
            '            { "type": "TableWidget", "name": "OptionsTable", "fields": { "columns": [ "$OptionsTableColumn1", "$OptionsTableColumn2" ], "rowHeight": %d }, "children": [\n' % _CUSTOM_TITLE_H
            + title + '            ] },\n'
            + '            { "type": "Widget", "name": "TouchCustomRows", "fields": { "rect": { "x": 0, "y": 0, "width": 1500, "height": %d } }, "children": [\n' % _CUSTOM_H
-           + _custom_lang_row() + ''.join((_custom_q3d_row(i, k) if k in ('q3d', 'touch_swap_above') else _custom_toggle_row(i, k, l)) for i, (k, l) in enumerate(_CUSTOM_ALL) if i) + _CUSTOM_LANG_HINT
+           + _custom_lang_row() + ''.join((_custom_header_row(i, k[1:], l) if k.startswith('#') else _custom_action_row(i, k[1:], l) if k.startswith('!') else _custom_sel_row(i, k, l) if k in _CUSTOM_SEL else _custom_toggle_row(i, k, l)) for i, (k, l) in enumerate(_CUSTOM_ALL) if i) + _CUSTOM_LANG_HINT
            + ''.join('        { "type": "TextBoxWidget", "name": "TouchCustomTest%d_Text", "fields": { "rect": { "x": 0, "y": %d, "width": 1000, "height": %d }, "text": "@KeyBindingTypeCustom", "style": "$StyleSettingsText" } },\n'
                      % (n, _CUSTOM_Y[len(_CUSTOM_ALL) + n], _CUSTOM_LINE_H) for n in range(_CUSTOM_TEST_ROWS)) +
            # 手柄模式的选中框（同符文之语清单 TouchRwSel）：框住十字键选中的那一行，宿主摆（dm_custom.c）；触屏模式一直在屏外（只把 x 挪出去、y 留在内容范围内：滚动区按子控件的范围算内容高度，y 放到 99999 会把可滚范围撑到十万）。和各行在同一个容器里，跟着滚

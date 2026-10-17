@@ -2,7 +2,7 @@
 // 「自定义」(Custom) settings: on/off switches for the features we added ourselves, all read and written here. Each module only calls dm_custom_get and does not read files / environment variables as settings on its own.
 #pragma once
 
-// 已生效的值 0 / 1：只在玩家点选项页「应用」后变，「放弃」不变，「默认」= 各键缺省（省电模式关，其余开）。键不认识返回 1。
+// 已生效的值（勾选框 0 / 1，选择行 0..n-1）：只在玩家点选项页「应用」后变，「放弃」不变，「默认」= 各键缺省（见 dm_custom.c 键表）。键不认识返回 1。
 // 任意线程可调：第一次调用读一次文件，之后只是原子量读 + 几项字符串比较，无锁。iOS 上启动期（存档挂上之前）就能读。
 // 键：auto_mana 自动喝药水（红蓝两种，键名沿用）/ drop_light 高价值掉落光柱 / map_mark 小地图标注出入口、小站与任务终点 / item_notes 物品注释与旧译名 / icloud iCloud 同步存档（cloud_ios.m，启动时读）/ pot_pick 药水自动拾取（dm_potpick.c）/ drop_haptic 高价值掉落震动（dm_drophaptic.c） / gem_pick 符文宝石自动拾取进高级仓库（百宝囊）/ store_btn 背包「存放」按钮（dm_pouch.c）/ eco_fps 省电模式 30 帧（nvn_mtl.m，缺省关）
 // touch_swap_above：0 = 传送门左侧（默认），1 = 技能区上方；点「应用」后生效。
@@ -12,9 +12,11 @@
 // touch_swap_above: 0 = left of portal (default), 1 = above the skill fan; applies after Apply.
 int dm_custom_get(const char *key);
 int dm_custom_lang_explicit(void);   // 语言开关（键 lang_en）在设置文件里写着的值：-1 没写过（不动原版设置）/ 0 简中 / 1 英文；hle_fs.c 挂存档时读 | Value of the language switch (key lang_en) as written in the settings file: -1 never written (original settings left alone) / 0 Simplified Chinese / 1 English; read by hle_fs.c at save mount
-// q3d 3D 画质（缺省 0 = 流畅优先：掉帧自动降 3D 比例；1 = 画质优先：不自动降），读盘 / 应用时调 hle_oe.c 的 dm_3d_quality_mode_set 生效
-// q3d 3D quality (default 0 = smoothness first: automatically lowers the 3D scale on frame drops; 1 = quality first: no automatic lowering); applied on load / apply by calling hle_oe.c's dm_3d_quality_mode_set
-int dm_fps_setting(void);   // 省电模式（键 eco_fps，缺省关）：开 = 30 帧、关 = 60；nvn_mtl.m mtl_fps_target 读 | Power-saving mode (key eco_fps, off by default): on = 30 fps, off = 60; read by mtl_fps_target in nvn_mtl.m
+int dm_fps_setting(void);   // 最高帧率（键 fps_max）：30 / 40 / 60，缺省 60；nvn_mtl.m mtl_fps_target 读 | Max frame rate (key fps_max): 30 / 40 / 60, default 60; read by mtl_fps_target in nvn_mtl.m
+int dm_custom_gfx_quality(void);   // 画质（键 gfx_q）：0 原生高清 / 1 高 / 2 均衡（缺省）/ 3 流畅 / 4 低；hle_oe.c 按它定输出分辨率与 3D 比例 | Graphics quality (key gfx_q): 0 native / 1 high / 2 balanced (default) / 3 smooth / 4 low; hle_oe.c sets the output resolution and 3D scale from it
+int dm_custom_drop_mul(int quality);   // 掉率倍率：quality 0 暗金 / 1 套装 / 2 稀有 / 3 魔法（键 dq_*）→ 1 / 2 / 3 / 5 / 10，缺省 1；dm_elysium.c 读 | Drop rate multiplier: quality 0 unique / 1 set / 2 rare / 3 magic (keys dq_*) -> 1 / 2 / 3 / 5 / 10, default 1; read by dm_elysium.c
+int dm_custom_take_pad_edit(void);   // 自定义页「调整屏幕按键」点过一次就返回 1（取走即清） | returns 1 once after the Custom page "Adjust on-screen keys" is tapped (cleared when taken)
+unsigned dm_custom_gen(void);          // 「应用」改了任何值就加一：局内按新设置重做的模块看它变没变 | Incremented whenever 「应用」(Apply) changes any value: modules that redo in-run work for new settings watch it
 
 void dm_custom_init(const char *dir);   // 设置文件所在目录（iOS 外壳启动时给 Documents）；不调则用存档提交目录的上一级（Mac 宿主） | Directory holding the settings file (the iOS shell passes Documents at startup); if not called, the parent of the save commit directory is used (Mac host)
 

@@ -62,7 +62,19 @@ if [ "$1" = build ]; then
   # 老机型补充包（DM_ASTC_PACK = 补充包目录，dm/tools/astc_pack.py 的产物）：设了才另出一套 ASTC 版覆盖层（Gen/romfs_overlay_astc*），不支持 BC 的机型用；没设（如 TestFlight）这两个目录为空
   # RomFS overlay (bottom UI v4: Gen/assets/NativeHUD/v4 → base image at the borrowed path + controller HUD layout); at App launch this layer is looked up first according to DM_ROMFS_OVERLAY
   # Legacy Device Pack (DM_ASTC_PACK = Legacy Device Pack directory, the build output of dm/tools/astc_pack.py): only when set is an additional ASTC overlay produced (Gen/romfs_overlay_astc*), used by devices that do not support BC; when unset (e.g. TestFlight) these two directories are empty
-  python3 tools/gen_romfs_overlay.py "${DM_ROMFS_SRC:-${DM_ROOT:-$HOME/dm-work}/data/switch/3.3.94012/Update/RomFS}" Gen/romfs_overlay > /dev/null || { t "🔴 gen_romfs_overlay 失败"; exit 1; }
+  # 覆盖层按输入指纹缓存（$DM_ROOT/build/cache/romfs_overlay/<指纹>/，APFS 克隆拷回 Gen，不占空间）：输入 = 生成脚本与它读的表 / 素材（dm/ios 下除 Sources、tests、Gen 非 assets 部分以外的文件，
+  # dm/tools、dm/i18n、dm/data、宿主中英表头）的路径 + 大小 + 修改时刻、原版 RomFS 清单、影响产物的环境变量。指纹相同 = 产物逐字节相同（生成过程不读别的），省掉每次约 22 秒
+  # The overlay is cached by input fingerprint ($DM_ROOT/build/cache/romfs_overlay/<fingerprint>/, copied back into Gen as APFS clones, taking no space): inputs = the generator scripts and the tables / art they read (files under dm/ios except Sources, tests and the non-assets part of Gen,
+  # dm/tools, dm/i18n, dm/data, the host bilingual table header) by path + size + mtime, the original RomFS manifest, and the environment variables that affect the output. Same fingerprint = byte-identical output (generation reads nothing else), saving about 22 s each time
+  ROMFS_SRC="${DM_ROMFS_SRC:-${DM_ROOT:-$HOME/dm-work}/data/switch/3.3.94012/Update/RomFS}"
+  overlay_inputs() {   # 每个输入一行「路径 大小 修改时刻」，再加 RomFS 清单与环境变量 | one "path size mtime" line per input, plus the RomFS manifest and environment variables
+    { find . ../tools ../i18n ../data ../host/dm_i18n_tab.h \( -path ./Sources -o -path ./tests -o -path ./Gen -o -path ./DmIOS.xcodeproj -o -name '*.pyc' -o -name .DS_Store -o -name __pycache__ \) -prune -o -type f -print; find Gen/assets -type f; } 2>/dev/null | LC_ALL=C sort | tr '\n' '\0' | xargs -0 stat -f '%N %z %m'
+    stat -f '%N %z %m' "$ROMFS_SRC/data/build_manifest.psv"; echo "astc=${DM_ASTC_PACK:-} mac=${DM_OVERLAY_MAC:-} rows=${DM_CUSTOM_TEST_ROWS:-} v4=${DM_HUD_V4_DIR:-}"; }
+  OFP=$(overlay_inputs | shasum | cut -c1-16)
+  OC=${DM_ROOT:-$HOME/dm-work}/build/cache/romfs_overlay/$OFP
+  if [ -n "$OFP" ] && [ -f "$OC/romfs_overlay/data/.build.config" ]; then cp -cR "$OC"/romfs_overlay* Gen/ || { t "🔴 覆盖层缓存拷回失败"; exit 1; }; t "覆盖层：输入没变（指纹 ${OFP}），用缓存"
+  else python3 tools/gen_romfs_overlay.py "$ROMFS_SRC" Gen/romfs_overlay > /dev/null || { t "🔴 gen_romfs_overlay 失败"; exit 1; }
+    if [ -n "$OFP" ]; then mkdir -p "$OC.tmp" && cp -cR Gen/romfs_overlay* "$OC.tmp/" && mv "$OC.tmp" "$OC" 2>/dev/null; t "覆盖层：已生成并缓存（指纹 ${OFP}）"; fi; fi
   # 游戏的配置文件只认 App 自带的这份（玩家那边的资源只核档案文件，见 host/romfs_validate.c）：每一套覆盖层里都得有，缺一套出包失败
   # The game only accepts the config file bundled with the App (on the player's side only the archive files of the resources are checked, see
   # host/romfs_validate.c): every overlay set must contain one, and packaging fails if any set lacks it

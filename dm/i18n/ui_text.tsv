@@ -74,13 +74,22 @@ dmCustomPotPick	腰带有空位时自动拾取能放进去的药水	Auto-pick po
 dmCustomDropHaptic	高价值物品掉落时震动	Vibrate on valuable drops	自定义页开关
 dmCustomGemPick	符文与宝石自动拾取（直接进高级仓库）	Auto-stash runes & gems	自定义页开关
 dmCustomStoreBtn	背包「存放」按钮	Inventory Deposit button	自定义页开关
-dmCustomEcoFps	省电模式（30 帧）	Power saver (30 fps)	自定义页开关
-dmCustomQ3dSmooth	流畅优先	Smoothness first	自定义页「3D 画质」单选的第一项（缺省；dm_custom.c 键 q3d=0）
-dmCustomQ3dSmoothHint	掉帧时自动降低 3D 画面清晰度	Lowers 3D resolution when frames drop	流畅优先下面的说明小字
-dmCustomQ3dQuality	画质优先	Quality first	自定义页「3D 画质」单选的第二项（q3d=1）
-dmCustomQ3dQualityHint	始终保持设定的 3D 清晰度	Always keeps the set 3D resolution	画质优先下面的说明小字
 dmCustomLootFilter	掉落过滤（噩梦起自动隐藏杂物）	Loot Filter (auto, Nightmare+)	自定义页开关；Loot Filter 是原版过滤器的英文名
 dmCustomAutoBuff	自动补上增益技能（站着不动时）	Auto-recast buffs when idle	自定义页开关
+dmCustomGfxQ	画质	Graphics quality	自定义页选择行 gfx_q（dm_custom.c；输出分辨率与 3D 比例，hle_oe.c dm_gfx_*）
+dmGfxQ0	原生高清	Native	画质档 0：屏幕原生分辨率、3D 1.0、不自动降
+dmGfxQ1	高	High	画质档 1
+dmGfxQ2	均衡	Balanced	画质档 2（缺省）
+dmGfxQ3	流畅	Smooth	画质档 3
+dmGfxQ4	低	Low	画质档 4
+dmCustomFpsMax	最高帧率	Max frame rate	自定义页选择行 fps_max：30 / 40 / 60（nvn_mtl.m mtl_fps_target）
+dmCustomDev	开发者	Developer	自定义页分节标题（touch_layout.py _custom_header_row）
+dmCustomPerfHud	显示性能浮层（帧率 / GPU / 温度 / 电量）	Performance overlay (FPS/GPU/heat/battery)	自定义页开发者开关 perf_hud（front_ios.m 性能浮层）
+dmCustomPerfLog	性能记录每 2 秒写入 perf.txt	Log performance to perf.txt every 2 s	自定义页开发者开关 perf_log（diag.c）
+dmCustomDqUnique	暗金掉率	Unique drop rate	自定义页掉率选择行（dm_custom.c dq_*，×1 原版 / ×2 / ×3 / ×5 / ×10，与极乐世界相乘）
+dmCustomDqSet	套装掉率	Set drop rate	自定义页掉率选择行（dm_custom.c dq_*，×1 原版 / ×2 / ×3 / ×5 / ×10，与极乐世界相乘）
+dmCustomDqRare	稀有掉率	Rare drop rate	自定义页掉率选择行（dm_custom.c dq_*，×1 原版 / ×2 / ×3 / ×5 / ×10，与极乐世界相乘）
+dmCustomDqMagic	魔法掉率	Magic drop rate	自定义页掉率选择行（dm_custom.c dq_*，×1 原版 / ×2 / ×3 / ×5 / ×10，与极乐世界相乘）
 dmCustomLang	语言 / Language	语言 / Language	自定义页语言那一行的标签。两种界面写同样的中英两个词：这一行的文字控件指定原版的全球字体 BlizzardGlobal（英文界面缺省的 Formal 字体没有汉字，全球字体有；原版标题页、队伍名、合规提示同样按控件指定它）
 dmCustomLangZh	中文	中文	语言行的选项一（两种界面都写「中文」，同上用全球字体）
 dmCustomLangEnOpt	English	English	语言行的选项二
@@ -366,6 +375,14 @@ dmTvGpuFail	图形设备初始化失败，请看启动日志	Could not set up th
 dmTcMap	地图	Map	触屏圆钮的字：右上地图键（DmTouchOverlay.m，取不到图标时）
 dmTcCancel	取消	Cancel	触屏圆钮的字：全屏地图开着时地图键变成「取消」（DmTouchOverlay.m）
 dmTcNavConfirm	确认／交换	Confirm / Swap	触屏圆钮的字：面板态的虚拟手柄圆钮（只在 DM_TOUCH_NAV_PAD=1 调试时出现）
+dmCustomNavPad	面板与对话里显示屏幕按键（摇杆、确认、取消）	On-screen keys in menus (stick, OK, cancel)	自定义页开关 nav_pad（dm_custom.c）
+dmCustomPadedit	屏幕按键的位置、大小与透明度	On-screen key position, size, opacity	自定义页动作行（touch_layout.py _custom_action_row；点按钮进布局编辑）
+dmCustomPadeditBtn	调整	Adjust	上一行的按钮字（原版前端小按钮）
+dmPadOk	确认	OK	屏幕按键 A 下面的小字（DmTouchOverlay drawPad）
+dmPadCancel	取消	Cancel	屏幕按键 B 下面的小字
+dmPadSize	大小	Size	调整面板第一行
+dmPadAlpha	透明度	Opacity	调整面板第二行
+dmPadPick	点选要调整的按键，可直接拖动	Tap a key to adjust, drag to move	调整面板：还没选中按键时的提示
 dmTcNavBack	返回	Back	同上
 dmTcNavAction	操作	Action	同上
 dmTcNavBind	绑定	Bind	同上

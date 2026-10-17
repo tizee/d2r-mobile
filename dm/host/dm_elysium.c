@@ -50,6 +50,7 @@
 #include "dm_elysium.h"
 #include "hle.h"
 #include "dm.h"
+#include "dm_custom.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,13 +173,20 @@ static int snapshot(uint8_t *b) {
     if (!tc_snapshot(b) || !mon_snapshot(b)) return 0;
     g_orig_sum = tables_sum(b); g_have_orig = 1; LOG("极乐世界：记下品质比例表与宝藏表原值（版本 1–3 各 %llu / %llu / %llu 条，校验和 %016llx）", g_orig_n[1], g_orig_n[2], g_orig_n[3], g_orig_sum); return 1;
 }
-static void restore(uint8_t *b) { tc_restore(b); mon_restore(b); for (int v = 1; v <= 3; v++) { uint64_t n, r = table(b, v, &n); if (r && g_orig[v] && n == g_orig_n[v]) memcpy((void *)(uintptr_t)r, g_orig[v], n * RATIO_REC); } }
-static void apply(uint8_t *b) {
+static void ratio_restore(uint8_t *b) { for (int v = 1; v <= 3; v++) { uint64_t n, r = table(b, v, &n); if (r && g_orig[v] && n == g_orig_n[v]) memcpy((void *)(uintptr_t)r, g_orig[v], n * RATIO_REC); } }
+static void restore(uint8_t *b) { tc_restore(b); mon_restore(b); ratio_restore(b); }
+// 品质比例表按倍率改：mu[品质]，品质 0 暗金 / 1 套装 / 2 稀有 / 3 魔法，各自 {基数, 除数, 下限} 在记录里的 int32 下标 0 / 6 / 3 / 9
+// （+0x00 / +0x18 / +0x0c / +0x24；原版判定顺序 暗金 0x65c7c4 → 套装 0x65c8a4 → 稀有 0x65c994 → 魔法 0x65cafc 各读这三项）。×N = 基数 ÷N、除数 ×N、下限 ÷N，总从原值算
+// The quality ratio table changed by multipliers: mu[quality], quality 0 unique / 1 set / 2 rare / 3 magic, each {base, divisor, minimum} at int32 index 0 / 6 / 3 / 9 of the record
+// (+0x00 / +0x18 / +0x0c / +0x24; the original roll order unique 0x65c7c4 -> set 0x65c8a4 -> rare 0x65c994 -> magic 0x65cafc reads these three each). xN = base /N, divisor xN, minimum /N, always computed from the original values
+static void apply(uint8_t *b, const int mu[4]) {
+    static const int at[4] = { 0, 6, 3, 9 };
     for (int v = 1; v <= 3; v++) { uint64_t n, r = table(b, v, &n); if (!r || !g_orig[v] || n != g_orig_n[v]) continue;
         for (uint64_t i = 0; i < n; i++) { int32_t *o = (int32_t *)(g_orig[v] + i * RATIO_REC), *d = (int32_t *)(uintptr_t)(r + i * RATIO_REC);
-            d[0] = o[0] / UNIQUE_MUL; d[1] = o[1] * UNIQUE_MUL; d[2] = o[2] / UNIQUE_MUL;
-            d[6] = o[6] / SET_MUL; d[7] = o[7] * SET_MUL; d[8] = o[8] / SET_MUL; } }
+            for (int q = 0; q < 4; q++) { int k = at[q], m = mu[q]; if (m <= 1) continue; d[k] = o[k] / m; d[k + 1] = o[k + 1] * m; d[k + 2] = o[k + 2] / m; } } }
 }
+// 本局的倍率 = 极乐世界的（暗金 ×5、套装 ×3）× 自定义页的掉率设置（dm_custom_drop_mul） | This run's multipliers = Elysium's (unique x5, set x3) x the Custom page drop-rate settings (dm_custom_drop_mul)
+static void drop_muls(int ely, int mu[4]) { static const int e[4] = { UNIQUE_MUL, SET_MUL, 1, 1 }; for (int q = 0; q < 4; q++) mu[q] = (ely ? e[q] : 1) * dm_custom_drop_mul(q); }
 static void dump(uint8_t *b, const char *when) {
     for (int v = 1; v <= 3; v++) { uint64_t n, r = table(b, v, &n); for (uint64_t i = 0; r && i < n; i++) { int32_t *d = (int32_t *)(uintptr_t)(r + i * RATIO_REC); uint8_t *c = (uint8_t *)d;
         LOG("极乐世界[%s] 版本 %d 第 %llu 条（版本号 %u 特殊 %u 职业专属 %u）：暗金 %d / %d / %d，套装 %d / %d / %d", when, v, i, *(uint16_t *)(c + 0x40), c[0x42], c[0x43], d[0], d[1], d[2], d[6], d[7], d[8]); } }
@@ -219,6 +227,10 @@ void dm_elysium_pump(void) {
     uint8_t *b = main_base(); if (!b || !snapshot(b)) return;
     uint64_t pl = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)), pd = pl ? *(uint64_t *)(pl + 0x10) : 0;
     if (!pd) { if (in_game) { in_game = 0; restore(b); if (atomic_exchange(&g_active, 0)) LOG("极乐世界：退局，品质比例表与宝藏表已写回原值（校验和 %s）", tables_sum(b) == g_orig_sum ? "相符" : "【红】不符"); } return; }
+    static unsigned gen_seen;
+    if (in_game && dm_custom_gen() != gen_seen) {   // 局内在自定义页改了掉率：品质比例表从原值按新倍率重做，下一次掉落即生效 | Drop rates changed on the Custom page during a run: redo the quality ratio table from the original values with the new multipliers; effective from the next drop
+        gen_seen = dm_custom_gen(); int mu[4]; drop_muls(atomic_load(&g_active), mu); ratio_restore(b); apply(b, mu);
+        LOG("掉率：局内改设置 → 暗金 ×%d、套装 ×%d、稀有 ×%d、魔法 ×%d（已重做品质比例表）", mu[0], mu[1], mu[2], mu[3]); }
     if (in_game) {   // 补齐做完后：等游戏把这次存盘提交了再把欠条划掉，并再存一次把「划掉」也落盘；没等到就留着欠条，下次进局再补（补到定数，不会多给） | After the top-up is done: wait for the game to commit this save before striking off the IOU, then save once more so the 'strike-off' is persisted too; if the wait fails keep the IOU and top up again on the next run entry (topped up to a fixed amount, never giving extra)
         static uint64_t c0, f0, cl, fl; static int w; uint64_t dm_fs_commit_count(void), dm_guest_frame(void); int dm_request_save(void); uint64_t c = dm_fs_commit_count(), f = dm_guest_frame();
         if (atomic_load(&g_topup_done) == 1) { atomic_store(&g_topup_done, 2); c0 = cl = c; f0 = fl = f; w = 1; dm_request_save(); }
@@ -232,9 +244,10 @@ void dm_elysium_pump(void) {
     restore(b);   // 保险：上一局没还原也从原值起算 | Safety: start from the original values even if the previous run did not restore
     const char *te = getenv("DM_TEST_ELYSIUM"); int on = list_has(LIST_ELY, name) || (te && !strcmp(te, name));   // 测试：DM_TEST_ELYSIUM=<角色名> 把这个角色当极乐世界角色（不写名单） | Test: DM_TEST_ELYSIUM=<character name> treats this character as an Elysium character (the list is not written)
     if (on && list_has(LIST_TOPUP, name)) { strlcpy(g_topup_name, name, sizeof g_topup_name); atomic_store(&g_topup_done, 0); atomic_store(&g_topup, 1); }   // 这个角色还欠一次共享仓库补齐（新建的，或上次补完没来得及落盘） | This character still owes one shared stash top-up (newly created, or the last top-up did not get persisted in time)
-    if (on) { apply(b); tc_apply(b); mon_apply(b); atomic_store(&g_active, 1); LOG("极乐世界：角色「%s」进局，暗金机会值 ÷%d、套装 ÷%d、符文 ×%d、不掉落 ÷%d、boss 永远首杀（品质比例表、宝藏表、怪物表已改，退局还原）", name, UNIQUE_MUL, SET_MUL, RUNE_MUL, NODROP_DIV); }
-    else if (tables_sum(b) != g_orig_sum) LOG("【红】极乐世界：普通角色「%s」进局后品质比例表 / 宝藏表校验和与启动时不符", name);
-    else if (getenv("DM_ELYSIUM_LOG")) LOG("极乐世界：普通角色「%s」进局，品质比例表与宝藏表校验和与启动时相符", name);
+    if (!on) { if (tables_sum(b) != g_orig_sum) LOG("【红】极乐世界：普通角色「%s」进局后品质比例表 / 宝藏表校验和与启动时不符", name);   // 在按掉率设置改表之前核：写回之后应与原值逐字节相同 | Checked before the drop-rate settings change the table: after the write-back it must be byte-identical to the original
+        else if (getenv("DM_ELYSIUM_LOG")) LOG("极乐世界：普通角色「%s」进局，品质比例表与宝藏表校验和与启动时相符", name); }
+    { int mu[4]; drop_muls(on, mu); apply(b, mu); gen_seen = dm_custom_gen(); LOG("掉率：角色「%s」进局 → 暗金 ×%d、套装 ×%d、稀有 ×%d、魔法 ×%d（%s × 自定义页设置）", name, mu[0], mu[1], mu[2], mu[3], on ? "极乐世界" : "普通角色"); }
+    if (on) { tc_apply(b); mon_apply(b); atomic_store(&g_active, 1); LOG("极乐世界：角色「%s」进局，暗金机会值 ÷%d、套装 ÷%d、符文 ×%d、不掉落 ÷%d、boss 永远首杀（品质比例表、宝藏表、怪物表已改，退局还原）", name, UNIQUE_MUL, SET_MUL, RUNE_MUL, NODROP_DIV); }
     if (getenv("DM_ELYSIUM_LOG")) dump(b, on ? "极乐" : "普通");
     tc_dump(b);
 }

@@ -1529,13 +1529,35 @@ void dm_longframe_note(const char *what) {
     time_t w = time(NULL); struct tm tmv; localtime_r(&w, &tmv); char ts[16]; strftime(ts, sizeof ts, "%H:%M:%S", &tmv);
     fprintf(fp, "长帧\t%s\t%s；%s\n", ts, what, ctx); fclose(fp);
 }
+// ---- 开发者性能浮层的数据（自定义页「显示性能浮层」，前端 front_ios.m 每秒取两次）：最近 240 个实际上屏间隔（出图线程写、主线程读，逐格原子量，读到半更新的窗口只差一格）、
+// 被丢弃帧计数、最近几帧的 GPU 时间（nvn_mtl.m mtl_gpu_ms，同长帧日志的口径）、每帧提交 CPU 时间
+// ---- Data for the developer performance overlay (Custom page "Performance overlay"; the front end front_ios.m reads it twice a second): the last 240 actual present intervals (written by the present thread, read by the main thread, one atomic per slot, so a window read mid-update is off by at most one slot),
+// the dropped-frame count, the GPU time of the last few frames (nvn_mtl.m mtl_gpu_ms, same measure as the long-frame log), and the per-frame submit CPU time
+#define PERF_RING 240
+static _Atomic uint32_t g_iv_ring[PERF_RING];   // 上屏间隔 ×100（0.01 ms） | present interval x100 (0.01 ms)
+static _Atomic unsigned g_iv_n, g_iv_drop;
+int dm_custom_get(const char *key);
+extern double mtl_gpu_ms(uint64_t f) __attribute__((weak));
+static int cmp_u32(const void *a, const void *b) { uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return x < y ? -1 : x > y; }
+void dm_perf_snapshot(dm_perf_snap *o) {
+    memset(o, 0, sizeof *o); unsigned n = atomic_load(&g_iv_n), k = n < 120 ? n : 120; uint32_t v[120]; double sum = 0;   // 最近 120 帧（60 帧下 2 秒） | the last 120 frames (2 s at 60 fps)
+    for (unsigned i = 0; i < k; i++) { v[i] = atomic_load(&g_iv_ring[(n - 1 - i) % PERF_RING]); sum += v[i] / 100.0; }
+    if (k && sum > 0) { o->fps = (float)(k * 1000.0 / sum); qsort(v, k, sizeof *v, cmp_u32); uint32_t p99 = v[k - 1 - k / 100]; o->low1 = p99 ? (float)(100000.0 / p99) : 0; o->worst_ms = v[k - 1] / 100.0f; }
+    o->dropped = atomic_load(&g_iv_drop);
+    uint64_t f = dm_nvn_frame_count(); double g = 0; int gn = 0;
+    for (uint64_t i = 3; mtl_gpu_ms && i < 15 && f > i; i++) { double ms = mtl_gpu_ms(f - i); if (ms > 0) { g += ms; gn++; } }
+    o->gpu_ms = gn ? (float)(g / gn) : -1;
+    { static uint64_t f0, c0; uint64_t c = dm_nvn_sub_cpu_ns(); if (f > f0 && f0) o->cpu_ms = (float)((c - c0) / 1e6 / (double)(f - f0)); f0 = f; c0 = c; }
+    o->s3 = dm_3d_scale_cur(); o->level = dm_gfx_level(); { uint64_t dm_game_res(int); uint64_t r = dm_game_res(1); o->out_w = (uint32_t)r; o->out_h = (uint32_t)(r >> 32); }
+}
 void dm_perf_present(double iv) {   // 出图线程每帧调一次（滞后 8 帧的实际上屏间隔 ms；−1 = 被系统丢弃，0 = 无读数） | Called once per frame by the present thread (the actual present interval in ms, lagging by 8 frames; −1 = dropped by the system, 0 = no reading)
     static const char *path; static int init; static unsigned c16, c25, c33, disc; static double sum; static uint64_t t0, f0, cpu0, tstart;
     if (!init) { init = 1; const char *e = getenv("DM_PERF_FILE"); path = e ? (strcmp(e, "0") ? e : NULL) : (TARGET_OS_IPHONE ? "perf.txt" : NULL); t0 = tstart = now_ns(); f0 = dm_nvn_frame_count(); cpu0 = dm_nvn_sub_cpu_ns(); }
     dm_3d_scale_feed(iv);   // 动态 3D 比例的控制器吃同一份上屏间隔（hle_oe.c） | The dynamic 3D scale controller consumes the same present intervals (hle_oe.c)
+    if (iv > 0) { unsigned k = atomic_load(&g_iv_n); atomic_store(&g_iv_ring[k % PERF_RING], (uint32_t)(iv * 100 + 0.5)); atomic_store(&g_iv_n, k + 1); } else if (iv < 0) atomic_fetch_add(&g_iv_drop, 1);
     if (!path) return;
     if (iv < 0) disc++; else if (iv > 0) { sum += iv; if (iv <= 20.8) c16++; else if (iv <= 29.2) c25++; else c33++; }
-    uint64_t now = now_ns(); if (now - t0 < 10000000000ull) return;
+    uint64_t now = now_ns(); if (now - t0 < (dm_custom_get("perf_log") ? 2000000000ull : 10000000000ull)) return;   // 自定义页「性能记录每 2 秒」开着：2 秒一行，否则 10 秒 | Custom page "log every 2 s" on: one line per 2 s, otherwise 10 s
     unsigned n = c16 + c25 + c33; uint64_t f = dm_nvn_frame_count(), cpu = dm_nvn_sub_cpu_ns();
     struct stat st; if (!stat(path, &st) && st.st_size > 256 * 1024) rename(path, "perf.old.txt");
     FILE *fp = fopen(path, "a");
