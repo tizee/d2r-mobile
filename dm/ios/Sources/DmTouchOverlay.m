@@ -210,56 +210,85 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         }
     }
 }
-// 面板 / 对话态的屏幕按键（dm_touch_controls.h DM_TC_PAD_*）：摇杆画法同战斗摇杆（古铜底圈 + 摇杆头图，头跟手指、限在底盘内）；
-// A / B 同技能钮的深色圆底 + 古铜圆环，上写键名、下写「确认 / 取消」。不透明度取各组设置，按住时变实。
-// 编辑中：三颗键加金圈（选中的那颗更粗）；屏幕顶部一块调整面板（大小、透明度两行「− 值 +」，复位、完成），没选中键时只显示提示与「完成」。
+// 面板 / 对话态的屏幕按键（dm_touch_controls.h DM_TC_PAD_*），与战斗控件同一套外观（DmTouchControlArt.h）：
+// 摇杆 = 战斗摇杆的渐隐底盘 + 黑灰摇杆头（头跟手指、限在底盘内）；A / B = 技能钮的金属嵌槽（drawButton，按下银灰高光），上写键名、下写「确认 / 取消」。
+// 每颗键整体（嵌槽 + 字）放进一个透明层再按该组的不透明度合成，按住时变实；嵌槽不会透出字底下的半透明叠影。
+// 编辑中：三颗键外套银灰选中圈（选中的那颗更亮更粗）；屏幕顶部一块调整面板（铁边黑灰底，大小、透明度两行「− 值 +」，复位、完成），没选中键时只显示提示与「完成」；面板钮也是嵌槽，按住有高光。
 // 面板只认 pad_sel 那一组，与键的种类无关：以后别的屏幕控件登记成组就能复用
-// On-screen keys of panel / dialog state (dm_touch_controls.h DM_TC_PAD_*): the stick is drawn like the combat stick (bronze base ring + stick head image, the head follows the finger, limited to the base);
-// A / B use the skill buttons' dark round base + bronze ring, with the key name on top and "confirm / cancel" below. Opacity comes from each group's settings and becomes solid while held.
-// While editing: a gold ring on the three keys (thicker on the selected one); an adjust panel at the top of the screen (two "− value +" rows for size and opacity, reset, done); with no key selected only a hint and "done" are shown.
+// On-screen keys of panel / dialog state (dm_touch_controls.h DM_TC_PAD_*), drawn with the same look as the combat controls (DmTouchControlArt.h):
+// stick = the combat stick's feathered base + charcoal thumb (the thumb follows the finger, limited to the base); A / B = the skill buttons' metal socket (drawButton, silver-gray highlight when held), key name on top and "confirm / cancel" below.
+// Each key as a whole (socket + text) goes into one transparency layer and is composited at its group's opacity, solid while held, so the socket does not show through under the text.
+// While editing: a silver-gray selection ring around the three keys (brighter and thicker on the selected one); an adjust panel at the top (iron rim, charcoal plate, two "− value +" rows for size and opacity, reset, done); with no key selected only a hint and "done" are shown; the panel buttons are sockets too and highlight while held.
 // The panel only works on the pad_sel group, independent of the key type: other on-screen controls can reuse it later by registering as groups
-static void pad_round(CGContextRef c, CGRect b, CGFloat a, BOOL held) {
-    CGFloat lw=MAX(1.5,b.size.width*.0375);
-    CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.086 green:.067 blue:.047 alpha:(held?.92:.78)*a].CGColor); CGContextFillEllipseInRect(c,b);
-    CGContextSetLineWidth(c,lw); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.60 green:.47 blue:.28 alpha:a].CGColor); CGContextStrokeEllipseInRect(c,CGRectInset(b,lw/2,lw/2));
+static const dm_tc_finger *pad_holder(const dm_tc_state *s, int key) {
+    for (int f=0; f<DM_TC_MAX_TOUCH; f++) if (s->finger[f].active && !s->finger[f].aim_cancelled && s->finger[f].target==DM_TC_PAD0+key) return &s->finger[f];
+    return NULL;
+}
+static void pad_select_ring(CGContextRef c, CGRect key, BOOL selected) {
+    CGRect ring=CGRectInset(key,-MAX(3,key.size.width*.06),-MAX(3,key.size.width*.06));
+    CGContextSaveGState(c);
+    CGContextSetRGBStrokeColor(c,.008,.012,.015,selected?.8:.5); CGContextSetLineWidth(c,selected?4:2.5); CGContextStrokeEllipseInRect(c,ring);   // 暗衬边：亮地面上也看得清 | dark backing: readable on bright ground
+    CGContextSetGrayStrokeColor(c,selected?.80:.62,selected?.95:.55); CGContextSetLineWidth(c,selected?2:1); CGContextStrokeEllipseInRect(c,ring);
+    CGContextRestoreGState(c);
+}
+// 调整面板底板：技能槽同款窄铁边（极淡暗红）+ 黑灰内槽，圆角矩形 | Adjust panel plate: the skill sockets' narrow iron rim (faint dark red) + charcoal well, as a rounded rectangle
+static void pad_panel_plate(CGContextRef c, CGRect r) {
+    CGFloat rim=MAX(2,MIN(r.size.width,r.size.height)*.03), rad=MIN(10,r.size.height*.12);
+    CGRect face=CGRectInset(r,rim,rim);
+    CGPathRef outer=CGPathCreateWithRoundedRect(r,rad,rad,NULL), inner=CGPathCreateWithRoundedRect(face,rad-rim/2,rad-rim/2,NULL);
+    const CGFloat metal[]={.26,.28,.28,.92, .055,.065,.07,.95, .16,.11,.10,.75}, well[]={.021,.021,.021,.94, .050,.050,.050,.94};
+    CGContextSaveGState(c);
+    CGContextSaveGState(c); CGContextAddPath(c,outer); CGContextClip(c); dm_button_gradient(c,r,metal,3); CGContextRestoreGState(c);
+    CGContextSetRGBStrokeColor(c,.008,.012,.015,.9); CGContextSetLineWidth(c,1.5); CGContextAddPath(c,outer); CGContextStrokePath(c);
+    CGContextSaveGState(c); CGContextAddPath(c,inner); CGContextClip(c); dm_button_gradient(c,face,well,2); CGContextRestoreGState(c);
+    CGContextSetRGBStrokeColor(c,.26,.29,.28,.55); CGContextSetLineWidth(c,1); CGContextAddPath(c,inner); CGContextStrokePath(c);
+    CGContextRestoreGState(c);
+    CGPathRelease(outer); CGPathRelease(inner);
+}
+// 面板上的小钮：嵌槽 + 居中符号 | small panel button: socket + centered symbol
+- (void)drawPadButton:(const dm_tc_state *)s key:(int)key glyph:(NSString *)glyph {
+    const dm_tc_target *t=&s->layout.pad[key]; BOOL held=pad_holder(s,key)!=NULL;
+    CGRect b=dm_button_rect(t->x,t->y,t->r);
+    [self drawButton:b held:held empty:NO primary:NO];
+    caption(glyph,CGRectMake(b.origin.x,t->y-t->r*.6,b.size.width,t->r*1.2),t->r,held?1:.86);
 }
 - (void)drawPad:(CGContextRef)c state:(const dm_tc_state *)s {
     if (!s->navigation_mode || !s->pad_on) return;
     dm_tc_pad_cfg cfg; dm_tc_get_pad_cfg(&cfg); BOOL edit=s->pad_edit!=0; const dm_tc_layout *l=&s->layout;
     for (int g=0; g<DM_TC_PADG_N; g++) {
         const dm_tc_target *t=&l->pad[g]; if (t->r<=0) continue;
-        const dm_tc_finger *hf=NULL; for(int f=0;f<DM_TC_MAX_TOUCH;f++) if(s->finger[f].active && !s->finger[f].aim_cancelled && s->finger[f].target==DM_TC_PAD0+g) hf=&s->finger[f];
+        const dm_tc_finger *hf=pad_holder(s,g);
         BOOL held=hf!=NULL && !edit; CGFloat a=edit ? .9 : held ? 1 : cfg.alpha[g];
-        CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2);
-        if (g==DM_TC_PAD_STICK) {   // 同战斗摇杆：底圈 + 摇杆头（头跟手指，限在底盘里） | like the combat stick: base ring + head (follows the finger, limited to the base)
-            [self drawJoystickPart:b base:YES active:held];   // 与战斗摇杆同一套底圈 / 摇杆头画法 | same base / thumb drawing as the combat stick
+        CGRect b=dm_button_rect(t->x,t->y,t->r);
+        CGContextSaveGState(c); CGContextSetAlpha(c,a); CGContextBeginTransparencyLayer(c,NULL);
+        if (g==DM_TC_PAD_STICK) {
+            [self drawJoystickPart:b base:YES active:held];
             CGFloat dx=0,dy=0; if(held) { dx=hf->x-s->pad_ox; dy=hf->y-s->pad_oy; CGFloat d=hypot(dx,dy); if(d>t->r) { dx*=t->r/d; dy*=t->r/d; } }
             CGFloat hr=t->r*23/60; [self drawJoystickPart:CGRectMake(t->x+dx-hr,t->y+dy-hr,hr*2,hr*2) base:NO active:held];
         } else {
-            pad_round(c,b,a,held);
-            CGFloat ts=t->r*.8; caption(g==DM_TC_PAD_A?@"A":@"B",CGRectMake(b.origin.x,t->y-ts*.85,b.size.width,ts*1.4),ts,held?1:MIN(1,a+.3));
-            CGFloat cs=t->r*.36; caption(@(dm_ui(g==DM_TC_PAD_A?"dmPadOk":"dmPadCancel")),CGRectMake(b.origin.x,t->y+t->r*.22,b.size.width,cs*1.5),cs,held?1:MIN(1,a+.3));
+            [self drawButton:b held:held empty:NO primary:NO];
+            CGFloat ts=t->r*.7, ta=held?1:.86; caption(g==DM_TC_PAD_A?@"A":@"B",CGRectMake(b.origin.x,t->y-ts*.95,b.size.width,ts*1.4),ts,ta);
+            CGFloat cs=t->r*.30; caption(@(dm_ui(g==DM_TC_PAD_A?"dmPadOk":"dmPadCancel")),CGRectMake(b.origin.x,t->y+t->r*.20,b.size.width,cs*1.5),cs,ta*.9);
         }
-        if (edit) { CGFloat lw=s->pad_sel==g?3:1.5; CGContextSetLineWidth(c,lw); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.95 green:.78 blue:.30 alpha:s->pad_sel==g?1:.6].CGColor); CGContextStrokeEllipseInRect(c,CGRectInset(b,-4,-4)); }
+        CGContextEndTransparencyLayer(c); CGContextRestoreGState(c);
+        if (edit) pad_select_ring(c,b,s->pad_sel==g);
     }
     if (!edit) return;
     // 调整面板 | adjust panel
     const dm_tc_target *d0=&l->pad[DM_TC_PAD_SIZE_DEC], *i0=&l->pad[DM_TC_PAD_SIZE_INC], *dn=&l->pad[DM_TC_PAD_DONE];
     CGFloat pad=d0->r*1.4, x0=d0->x-d0->r-pad*3.2, x1=i0->x+i0->r+pad, y0=d0->y-d0->r-pad*.6, y1=dn->y+dn->r+pad*.6, ts=d0->r*.62;
-    UIBezierPath *bg=[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x0,y0,x1-x0,y1-y0) cornerRadius:8];
-    CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.05 green:.04 blue:.03 alpha:.9].CGColor); CGContextAddPath(c,bg.CGPath); CGContextFillPath(c);
-    CGContextSetLineWidth(c,1.5); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.60 green:.47 blue:.28 alpha:1].CGColor); CGContextAddPath(c,bg.CGPath); CGContextStrokePath(c);
+    pad_panel_plate(c,CGRectMake(x0,y0,x1-x0,y1-y0));
     int g=s->pad_sel;
     if (g<0) { caption(@(dm_ui("dmPadPick")),CGRectMake(x0,d0->y-ts,x1-x0,ts*2),ts,1); }
     else {
         static const int btns[4]={DM_TC_PAD_SIZE_DEC,DM_TC_PAD_SIZE_INC,DM_TC_PAD_ALPHA_DEC,DM_TC_PAD_ALPHA_INC};
-        for (int k=0;k<4;k++) { const dm_tc_target *t=&l->pad[btns[k]]; CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2); pad_round(c,b,1,NO); caption(k%2?@"+":@"-",CGRectMake(b.origin.x,t->y-t->r*.6,b.size.width,t->r*1.2),t->r,1); }
+        for (int k=0;k<4;k++) [self drawPadButton:s key:btns[k] glyph:k%2?@"+":@"−"];
         for (int k=0;k<2;k++) { const dm_tc_target *t=&l->pad[btns[k*2]]; CGFloat cx=(t->x+l->pad[btns[k*2+1]].x)/2;
             caption(@(dm_ui(k?"dmPadAlpha":"dmPadSize")),CGRectMake(x0+4,t->y-ts*.8,t->x-t->r-x0-8,ts*1.6),ts*.9,.85);
             caption([NSString stringWithFormat:@"%.0f%%",(k?cfg.alpha[g]:cfg.scale[g])*100],CGRectMake(cx-60,t->y-ts*.8,120,ts*1.6),ts,1); }
-        const dm_tc_target *t=&l->pad[DM_TC_PAD_RESET]; CGRect b=CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2); pad_round(c,b,1,NO); caption(@"↺",CGRectMake(b.origin.x,t->y-t->r*.6,b.size.width,t->r*1.2),t->r,1);
+        [self drawPadButton:s key:DM_TC_PAD_RESET glyph:@"↺"];
     }
-    { CGRect b=CGRectMake(dn->x-dn->r,dn->y-dn->r,dn->r*2,dn->r*2); pad_round(c,b,1,NO); caption(@"✓",CGRectMake(b.origin.x,dn->y-dn->r*.6,b.size.width,dn->r*1.2),dn->r,1); }
+    [self drawPadButton:s key:DM_TC_PAD_DONE glyph:@"✓"];
 }
 - (void)drawRect:(CGRect)rect {
     (void)rect;
