@@ -14,6 +14,17 @@ cd "$(dirname "$0")/.." || exit 1   # dm/ios
 ROOT=${DM_ROOT:-$HOME/dm-work}; O=$ROOT/build/dev; DD=$O/dd; IPA=$ROOT/build/D2RMobile-dev.ipa
 t() { echo "[$(date +%T)] $*"; }; die() { t "🔴 $*"; exit 1; }
 mkdir -p "$O" || die "建不了 $O"
+# 着色器库按本机工具算的链版本取（dmsh_chain.lock 记本机工具指纹，随提交入仓）。合并上游会带进上游机器的锁和版本头，
+# 不先查的话要到 run.sh 找库那步才报「缺 B 着色器」、看不出原因：这里先核工具、版本头、本机库、c1 清单，对不上直接给修法
+# Shader libraries are keyed by the chain version computed from this machine's tools (dmsh_chain.lock records their fingerprints and is committed). Merging upstream brings in the upstream machine's lock and header;
+# without checking first, it only fails at run.sh's library lookup with "missing B shaders" and no cause: check tools, header, local library and c1 list here, and print the fix on mismatch
+G=../gfx/tools; MSL=${DM_MSL_IOS:-$ROOT/build/ios/dmsh_b}
+python3 $G/dmsh_chain.py --check-tools > "$O/chain.log" 2>&1 || { cat "$O/chain.log"; die "翻译链工具与锁文件不符（本机换了工具，或合并上游带进了别人的锁）：python3 dm/gfx/tools/dmsh_chain.py --update-lock && python3 dm/gfx/tools/dmsh_chain.py --header，然后重跑本脚本并提交这两个文件"; }
+V=$(python3 $G/dmsh_chain.py) && H=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' ../gfx/nvn/dmsh_chain.h)
+[ -n "${V}" ] && [ "${V}" = "${H}" ] || die "dmsh_chain.h 写的是 ${H}，按仓内文件算是 ${V}：python3 dm/gfx/tools/dmsh_chain.py --header"
+ls "$MSL/b-${V}" 2>/dev/null | grep -q "_b.metallib$" || die "本机没有链版本 ${V} 的 iOS 着色器库 $MSL/b-${V}：翻译链输入变了，按 dm/ios/run.sh:45 的命令出库，再跑 python3 dm/gfx/tools/c1_guard.py $ROOT/build/cache/metal_shader_cache/b-${V} dm/gfx/nvn/c1_full.tsv"
+head -1 ../gfx/nvn/c1_full.tsv | grep -q "^# chain b-${V} " || die "dm/gfx/nvn/c1_full.tsv 不是链版本 ${V} 的：python3 dm/gfx/tools/c1_guard.py $ROOT/build/cache/metal_shader_cache/b-${V} dm/gfx/nvn/c1_full.tsv"
+t "着色器链 ${V}（本机库 $(ls "$MSL/b-${V}" | grep -c '_b.metallib$') 个）"
 # 包名 / 团队号只是占位：不签名，自签工具装机时换成使用者自己的 | Bundle ID / team ID are placeholders: unsigned, the sideloading tool replaces them at install time
 printf 'DM_TEAM_ID=0000000000\nDM_BUNDLE_ID=org.d2rmobile.app\nDM_FREE_ACCOUNT=1\n' > "$O/dev.env"
 export DM_LOCAL_ENV=$O/dev.env DM_FREE_ACCOUNT=1 DM_ROOT=$ROOT
